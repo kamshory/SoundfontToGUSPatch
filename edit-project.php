@@ -117,7 +117,7 @@ try {
         .sample-list-item { padding: 8px; border-bottom: 1px solid #eee; cursor: pointer; border-radius: 4px; }
         .sample-list-item:hover { background-color: #e9ecef; }
         .sample-list-item.active { background-color: var(--primary-color); color: white; font-weight: 500; }
-        .waveform-canvas { width: 100%; height: 150px; background-color: #2c3e50; border: 1px solid var(--border-color); margin-top: 10px; cursor: crosshair; }
+        .waveform-canvas { height: 150px; background-color: #2c3e50; cursor: crosshair; }
         .control-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap: 15px; margin-top: 15px; }
         .control-group { display: flex; flex-direction: column; }
         .control-group label { margin-bottom: 5px; font-size: 0.9em; color: var(--text-light); }
@@ -193,8 +193,13 @@ try {
                 <?php if ($patchId > 0): ?>
                     <div id="editor-container">
                         <h3>Waveform Editor: <em><?php echo $patchToEditName; ?></em></h3>
-                        <canvas id="waveform-canvas" class="waveform-canvas" width="1000" height="150"></canvas>
-                        <!-- Playback controls can go here if needed -->
+                        <div style="margin-bottom: 10px;">
+                            <button id="btn-zoom-in" class="control-btn">+</button>
+                            <button id="btn-zoom-out" class="control-btn">-</button>
+                        </div>
+                        <div id="waveform-container" style="overflow-x: auto; border: 1px solid var(--border-color);">
+                            <canvas id="waveform-canvas" class="waveform-canvas" width="1000" height="150"></canvas>
+                        </div>
                     </div>
                 <?php else: ?>
                     <p class="placeholder-text">Select a patch from the list to begin editing.</p>

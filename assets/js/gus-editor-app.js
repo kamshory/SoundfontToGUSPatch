@@ -3,10 +3,13 @@ import { MidInstrument, MidSample, MODES_16BIT, MODES_LOOPING, MODES_SUSTAIN, MO
 
 class WaveformEditor {
     constructor(canvasId) {
+        this.container = document.getElementById('waveform-container');
         this.canvas = document.getElementById(canvasId);
         this.ctx = this.canvas.getContext('2d');
-        this.sampleData = null; // Akan diisi dengan data sampel (misal: Int16Array)
+        this.sampleData = null;
         this.isDrawing = false;
+        this.zoomLevel = 1.0; // 1.0 = 100% zoom
+        this.viewOffset = 0; // The starting sample index for the current view
 
         this._addEventListeners();
         this.draw(); // Initial empty draw
@@ -17,7 +20,10 @@ class WaveformEditor {
      * @param {Int16Array} sampleData - Data sampel mentah.
      */
     loadSample(sampleData) {
+        this.zoomLevel = 1.0;
+        this.viewOffset = 0;
         this.sampleData = sampleData;
+        this.updateCanvasWidth();
         this.draw();
     }
 
@@ -25,9 +31,16 @@ class WaveformEditor {
      * Menggambar waveform ke canvas.
      */
     draw() {
+        if (!this.canvas) return;
+        // Ensure canvas width matches zoom level
+        this.canvas.width = 1000 * this.zoomLevel;
+
         const width = this.canvas.width;
         const height = this.canvas.height;
         const middle = height / 2;
+
+        const viewWidth = Math.floor(this.sampleData ? this.sampleData.length / this.zoomLevel : width);
+        const startSample = this.viewOffset;
 
         // Clear canvas
         this.ctx.clearRect(0, 0, width, height); // Clear the entire canvas
@@ -49,17 +62,35 @@ class WaveformEditor {
         this.ctx.strokeStyle = '#00ff88';
         this.ctx.beginPath();
         this.ctx.moveTo(0, middle);
-
-        const step = this.sampleData.length / width;
+        
+        const step = this.sampleData.length / width; // 1 canvas pixel = step samples
         for (let i = 0; i < width; i++) {
-            const sampleIndex = Math.floor(i * step);
+            const sampleIndex = startSample + Math.floor(i * step);
             const amplitude = this.sampleData[sampleIndex] || 0;
-            
+
             // Normalisasi nilai sampel (Int16: -32768 to 32767) ke tinggi canvas
             const y = middle - (amplitude / 32768) * middle;
             this.ctx.lineTo(i, y);
         }
         this.ctx.stroke();
+    }
+
+    zoom(direction) {
+        if (direction > 0) { // Zoom in
+            this.zoomLevel *= 1.5;
+        } else { // Zoom out
+            this.zoomLevel /= 1.5;
+        }
+        // Clamp zoom level
+        this.zoomLevel = Math.max(1.0, this.zoomLevel);
+        this.viewOffset = Math.max(0, Math.min(this.viewOffset, this.sampleData.length - (this.sampleData.length / this.zoomLevel)));
+        this.updateCanvasWidth();
+        this.draw();
+    }
+
+    updateCanvasWidth() {
+        if (!this.canvas) return;
+        this.canvas.width = 1000 * this.zoomLevel;
     }
 
     /**
@@ -81,6 +112,12 @@ class WaveformEditor {
         this.canvas.addEventListener('mouseleave', () => {
             this.isDrawing = false;
         });
+        if (this.container) {
+            this.container.addEventListener('scroll', (e) => {
+                const scrollLeft = e.target.scrollLeft;
+                this.viewOffset = Math.floor((scrollLeft / (this.canvas.width - this.container.clientWidth)) * (this.sampleData.length - (this.sampleData.length / this.zoomLevel)));
+            });
+        }
     }
 
     /**
@@ -155,6 +192,8 @@ export class GusEditorApp {
             btnNoteOn: ensureElement('btn-note-on'),
             btnNoteOff: ensureElement('btn-note-off'),
             btnExtractWav: document.getElementById('btn-extract-wav'),
+            btnZoomIn: document.getElementById('btn-zoom-in'),
+            btnZoomOut: document.getElementById('btn-zoom-out'),
             modeLooping: ensureElement('mode-looping'),
             modeSustain: ensureElement('mode-sustain'),
             modeEnvelope: document.getElementById('mode-envelope'),
@@ -194,6 +233,8 @@ export class GusEditorApp {
         if (this.ui.btnNoteOff) this.ui.btnNoteOff.addEventListener('click', () => this.stopNote());
         if (this.ui.btnEditBasicProperties) this.ui.btnEditBasicProperties.addEventListener('click', () => this.openModal('basic'));
         if (this.ui.btnEditEnvelope) this.ui.btnEditEnvelope.addEventListener('click', () => this.openModal('envelope'));
+        if (this.ui.btnZoomIn) this.ui.btnZoomIn.addEventListener('click', () => this.waveformEditor.zoom(1));
+        if (this.ui.btnZoomOut) this.ui.btnZoomOut.addEventListener('click', () => this.waveformEditor.zoom(-1));
         if (this.ui.btnEditVibrato) this.ui.btnEditVibrato.addEventListener('click', () => this.openModal('vibrato'));
 
         if (this.ui.btnCloseModals) {
