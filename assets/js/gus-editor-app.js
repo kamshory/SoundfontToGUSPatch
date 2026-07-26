@@ -253,16 +253,6 @@ export class GusEditorApp {
         if (this.ui.btnZoomOut) this.ui.btnZoomOut.addEventListener('click', () => this.waveformEditor.zoom(-1));
         if (this.ui.btnEditVibrato) this.ui.btnEditVibrato.addEventListener('click', () => this.openModal('vibrato'));
 
-        // Create and append the fake scrollbar structure
-        const scrollbarContainer = document.createElement('div');
-        scrollbarContainer.className = 'fake-scrollbar-container';
-        scrollbarContainer.style.overflowX = 'auto';
-        const scrollbarContent = document.createElement('div');
-        scrollbarContent.className = 'fake-scrollbar-content';
-        scrollbarContent.style.height = '1px'; // Must have some height to be scrollable
-        scrollbarContainer.appendChild(scrollbarContent);
-        this.waveformEditor.container.appendChild(scrollbarContainer);
-
         if (this.ui.btnCloseModals) {
             this.ui.btnCloseModals.forEach(btn => btn.addEventListener('click', () => this.closeAllModals()));
         }

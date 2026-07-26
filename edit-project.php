@@ -216,6 +216,9 @@ try {
                         </div>
                         <div id="waveform-container" style="border: 1px solid var(--border-color); border-bottom: none;">
                             <canvas id="waveform-canvas" class="waveform-canvas" width="1000" height="150"></canvas>
+                            <div class="fake-scrollbar-container" style="overflow-x: auto;">
+                                <div class="fake-scrollbar-content" style="height: 1px;"></div>
+                            </div>
                         </div>
                     </div>
                 <?php else: ?>
