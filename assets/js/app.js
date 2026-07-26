@@ -432,6 +432,6 @@ document.addEventListener('DOMContentLoaded', () => {
     bufferSize: 8192,
 
     timidityCfg: 'timidity.cfg',
-    patchUrlBase: './gus-patch/',
+    patchUrlBase: './projects/Rolan_1785063654/',
   });
 });

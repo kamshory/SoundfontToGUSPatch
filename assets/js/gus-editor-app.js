@@ -181,7 +181,13 @@ function ensureElement(id) {
     return el;
 }
 export class GusEditorApp {
-    constructor() {
+    /**
+     * @param {MidiSynth} previewSynth - An external MidiSynth instance for playing test notes.
+     */
+    constructor(previewSynth) {
+        // Gunakan synth yang di-pass dari luar, atau buat instance baru jika tidak ada
+        this.previewSynth = previewSynth || new MidiSynth();
+
         this.ui = {
             // File controls
             btnNewPatch: document.getElementById('btn-new-patch'),
@@ -231,8 +237,6 @@ export class GusEditorApp {
         this.instrument = null; // Objek yang menyimpan data patch
         this.samples = [];
         this.activeSampleIndex = -1;
-        this.activeTestNote = null; // Menyimpan nada yang sedang aktif
-        this.previewSynth = null; // Synth khusus untuk preview
         
         // Only initialize components if their corresponding UI elements exist
         if (this.ui.envelopeEditor) {
@@ -487,16 +491,10 @@ export class GusEditorApp {
             return;
         }
         
-        // If a note is already playing, stop it first.
-        if (this.activeTestNote) {
-            this.stopNote();
-            await new Promise(resolve => setTimeout(resolve, 50)); // Short delay
-        }
+        // Stop any currently playing note before starting a new one.
+        this.stopNote();
+        await new Promise(resolve => setTimeout(resolve, 50)); // Short delay for note to fade
 
-        // Use a dedicated synth instance for this test.
-        if (!this.previewSynth) {
-            this.previewSynth = new MidiSynth();
-        }
         await this.previewSynth._ensureAudioIsRunning();
 
         // 1. Create a MidSample object directly from the UI data
@@ -525,27 +523,27 @@ export class GusEditorApp {
         midInstrument.samples = 1;
         midInstrument.sample = [midSample];
 
-        // 3. Inject this temporary instrument into the synth's tone bank
-        const program = 0;
+        // 3. Inject this temporary instrument directly into the synth's tone bank for live testing.
+        // This avoids using programChange which relies on a pre-loaded config map.
+        const program = 0; // We'll always use program 0 on channel 0 for this test.
         if (!this.previewSynth.testSoundSong.tonebank[0]) {
             this.previewSynth.testSoundSong.tonebank[0] = { instrument: new Array(128).fill(null) };
         }
         this.previewSynth.testSoundSong.tonebank[0].instrument[program] = midInstrument;
 
+        // 4. Play the note directly. The synth will use the instrument we just injected.
         const channel = 0;
         const pitch = parseInt(this.ui.testPitch.value, 10);
         const velocity = parseInt(this.ui.testVelocity.value, 10);
         const pan = parseInt(this.ui.samplePanning.value, 10);
         this.previewSynth.noteOn(channel, pitch, velocity, pan);
-        this.activeTestNote = { channel, pitch };
     }
 
     stopNote() {
         if (!this.previewSynth) return;
         const channel = 0;
         const pitch = parseInt(this.ui.testPitch.value, 10);
-        this.previewSynth.noteOff(channel, pitch);
-        this.activeTestNote = null;
+        this.previewSynth.noteOff(channel, pitch); // Stop the specific note
     }
 
     async extractToWav() {
