@@ -117,7 +117,7 @@ try {
         .sample-list-item { padding: 8px; border-bottom: 1px solid #eee; cursor: pointer; border-radius: 4px; }
         .sample-list-item:hover { background-color: #e9ecef; }
         .sample-list-item.active { background-color: var(--primary-color); color: white; font-weight: 500; }
-        .waveform-canvas { height: 150px; background-color: #2c3e50; cursor: crosshair; }
+        .waveform-canvas { display: block; height: 150px; background-color: #2c3e50; cursor: crosshair; }
         .control-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap: 15px; margin-top: 15px; }
         .control-group { display: flex; flex-direction: column; }
         .control-group label { margin-bottom: 5px; font-size: 0.9em; color: var(--text-light); }
@@ -126,6 +126,23 @@ try {
         .editor-section:first-child { margin-top: 0; padding-top: 0; border-top: none; }
 
         .placeholder-text { text-align: center; color: var(--text-light); margin-top: 50px; font-size: 1.2em; }
+
+        .fake-scrollbar-container {
+            height: 14px; /* Give it a visible height */
+            background-color: #e9ecef; /* A background to make the track visible */
+        }
+
+        /* Always-visible scrollbar styles for Webkit browsers */
+        .fake-scrollbar-container::-webkit-scrollbar {
+            height: 12px;
+        }
+        .fake-scrollbar-container::-webkit-scrollbar-track {
+            background: #e9ecef;
+        }
+        .fake-scrollbar-container::-webkit-scrollbar-thumb {
+            background-color: #ced4da;
+            border-radius: 6px;
+        }
 
         @media (max-width: 1200px) {
             .main-layout { grid-template-columns: 1fr; }
@@ -197,7 +214,7 @@ try {
                             <button id="btn-zoom-in" class="control-btn">+</button>
                             <button id="btn-zoom-out" class="control-btn">-</button>
                         </div>
-                        <div id="waveform-container" style="overflow-x: auto; border: 1px solid var(--border-color);">
+                        <div id="waveform-container" style="border: 1px solid var(--border-color); border-bottom: none;">
                             <canvas id="waveform-canvas" class="waveform-canvas" width="1000" height="150"></canvas>
                         </div>
                     </div>

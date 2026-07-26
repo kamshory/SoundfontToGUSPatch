@@ -23,7 +23,8 @@ class WaveformEditor {
         this.zoomLevel = 1.0;
         this.viewOffset = 0;
         this.sampleData = sampleData;
-        this.updateCanvasWidth();
+        this.updateScroller();
+        this.container.querySelector('.fake-scrollbar-container').scrollLeft = 0;
         this.draw();
     }
 
@@ -32,15 +33,12 @@ class WaveformEditor {
      */
     draw() {
         if (!this.canvas) return;
-        // Ensure canvas width matches zoom level
-        this.canvas.width = 1000 * this.zoomLevel;
+        // Canvas width now stays fixed to its container's visible width
+        this.canvas.width = this.container.clientWidth;
 
         const width = this.canvas.width;
         const height = this.canvas.height;
         const middle = height / 2;
-
-        const viewWidth = Math.floor(this.sampleData ? this.sampleData.length / this.zoomLevel : width);
-        const startSample = this.viewOffset;
 
         // Clear canvas
         this.ctx.clearRect(0, 0, width, height); // Clear the entire canvas
@@ -62,10 +60,13 @@ class WaveformEditor {
         this.ctx.strokeStyle = '#00ff88';
         this.ctx.beginPath();
         this.ctx.moveTo(0, middle);
-        
-        const step = this.sampleData.length / width; // 1 canvas pixel = step samples
+
+        const totalSamples = this.sampleData.length;
+        const visibleSamples = Math.floor(totalSamples / this.zoomLevel);
+        const step = visibleSamples / width; // How many samples per pixel
+
         for (let i = 0; i < width; i++) {
-            const sampleIndex = startSample + Math.floor(i * step);
+            const sampleIndex = this.viewOffset + Math.floor(i * step);
             const amplitude = this.sampleData[sampleIndex] || 0;
 
             // Normalisasi nilai sampel (Int16: -32768 to 32767) ke tinggi canvas
@@ -83,14 +84,10 @@ class WaveformEditor {
         }
         // Clamp zoom level
         this.zoomLevel = Math.max(1.0, this.zoomLevel);
-        this.viewOffset = Math.max(0, Math.min(this.viewOffset, this.sampleData.length - (this.sampleData.length / this.zoomLevel)));
-        this.updateCanvasWidth();
-        this.draw();
-    }
+        
+        this.updateScroller();
 
-    updateCanvasWidth() {
-        if (!this.canvas) return;
-        this.canvas.width = 1000 * this.zoomLevel;
+        this.draw();
     }
 
     /**
@@ -98,6 +95,8 @@ class WaveformEditor {
      */
     _addEventListeners() {
         this.canvas.addEventListener('mousedown', (e) => {
+            // Prevent default text selection behavior
+            e.preventDefault();
             this.isDrawing = true;
             this._editSample(e); // Langsung edit pada titik klik pertama
         });
@@ -113,10 +112,19 @@ class WaveformEditor {
             this.isDrawing = false;
         });
         if (this.container) {
-            this.container.addEventListener('scroll', (e) => {
-                const scrollLeft = e.target.scrollLeft;
-                this.viewOffset = Math.floor((scrollLeft / (this.canvas.width - this.container.clientWidth)) * (this.sampleData.length - (this.sampleData.length / this.zoomLevel)));
-            });
+            const scrollbarContainer = this.container.querySelector('.fake-scrollbar-container');
+            if (scrollbarContainer) {
+                scrollbarContainer.addEventListener('scroll', (e) => {
+                    if (!this.sampleData || this.zoomLevel <= 1.0) return;
+
+                    const scrollLeft = e.target.scrollLeft;
+                    const scrollWidth = e.target.scrollWidth - e.target.clientWidth;
+                    const scrollPercentage = scrollWidth > 0 ? scrollLeft / scrollWidth : 0;
+                    const totalVisibleSamples = this.sampleData.length / this.zoomLevel;
+                    this.viewOffset = Math.floor(scrollPercentage * (this.sampleData.length - totalVisibleSamples));
+                    this.draw();
+                });
+            }
         }
     }
 
@@ -131,9 +139,10 @@ class WaveformEditor {
         const x = e.clientX - rect.left;
         const y = e.clientY - rect.top;
 
-        // Konversi posisi X canvas ke index array sampel
-        const sampleIndex = Math.floor((x / this.canvas.width) * this.sampleData.length);
+        const totalVisibleSamples = this.sampleData.length / this.zoomLevel;
+        const samplesPerPixel = totalVisibleSamples / this.canvas.width;
 
+        const sampleIndex = this.viewOffset + Math.floor(x * samplesPerPixel);
         // Konversi posisi Y canvas ke nilai amplitudo Int16
         const amplitude = Math.floor(((this.canvas.height / 2) - y) / (this.canvas.height / 2) * 32767);
         
@@ -145,6 +154,13 @@ class WaveformEditor {
             
             // Gambar ulang canvas untuk menunjukkan perubahan
             this.draw();
+        }
+    }
+
+    updateScroller() {
+        const scroller = this.container.querySelector('.fake-scrollbar-content');
+        if (scroller) {
+            scroller.style.width = `${100 * this.zoomLevel}%`;
         }
     }
 }
@@ -236,6 +252,16 @@ export class GusEditorApp {
         if (this.ui.btnZoomIn) this.ui.btnZoomIn.addEventListener('click', () => this.waveformEditor.zoom(1));
         if (this.ui.btnZoomOut) this.ui.btnZoomOut.addEventListener('click', () => this.waveformEditor.zoom(-1));
         if (this.ui.btnEditVibrato) this.ui.btnEditVibrato.addEventListener('click', () => this.openModal('vibrato'));
+
+        // Create and append the fake scrollbar structure
+        const scrollbarContainer = document.createElement('div');
+        scrollbarContainer.className = 'fake-scrollbar-container';
+        scrollbarContainer.style.overflowX = 'auto';
+        const scrollbarContent = document.createElement('div');
+        scrollbarContent.className = 'fake-scrollbar-content';
+        scrollbarContent.style.height = '1px'; // Must have some height to be scrollable
+        scrollbarContainer.appendChild(scrollbarContent);
+        this.waveformEditor.container.appendChild(scrollbarContainer);
 
         if (this.ui.btnCloseModals) {
             this.ui.btnCloseModals.forEach(btn => btn.addEventListener('click', () => this.closeAllModals()));
@@ -333,7 +359,7 @@ export class GusEditorApp {
         this.ui.sampleLoopEnd.value = sample.loop_end;
         this.ui.sampleRate.value = sample.sample_rate;
         this.ui.samplePanning.value = sample.panning || 64;
-
+        
         this.waveformEditor.loadSample(sample.data);
     }
 
