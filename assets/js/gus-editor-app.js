@@ -261,21 +261,35 @@ export class GusEditorApp {
 
     _createEnvelopeControls() {
         this.ui.envelopePoints = [];
+        this.ui.envelopeEditor.innerHTML = ''; // Clear existing controls
         for (let i = 0; i < 6; i++) {
             const pointDiv = document.createElement('div');
             pointDiv.className = 'envelope-point control-group';
 
+            // Rate Input
             const rateLabel = document.createElement('label');
-            rateLabel.textContent = `Rate ${i}`;
+            rateLabel.textContent = `Rate ${i+1}`;
             const rateInput = document.createElement('input');
             rateInput.type = 'number';
             rateInput.id = `env-rate-${i}`;
             rateInput.min = 0;
             rateInput.max = 255;
             rateInput.value = 0;
-            
+
+            // Level Input
+            const levelLabel = document.createElement('label');
+            levelLabel.textContent = `Level ${i+1}`;
+            const levelInput = document.createElement('input');
+            levelInput.type = 'number';
+            levelInput.id = `env-level-${i}`;
+            levelInput.min = 0;
+            levelInput.max = 255;
+            levelInput.value = 0;
+
             pointDiv.appendChild(rateLabel);
             pointDiv.appendChild(rateInput);
+            pointDiv.appendChild(levelLabel);
+            pointDiv.appendChild(levelInput);
             this.ui.envelopeEditor.appendChild(pointDiv);
         }
     }

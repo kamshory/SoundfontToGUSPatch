@@ -144,6 +144,28 @@ try {
             border-radius: 6px;
         }
 
+        .envelope-editor {
+            display: flex;
+            flex-wrap: wrap; /* Allow wrapping on smaller screens */
+            gap: 15px;
+        }
+        .envelope-editor .control-group input[type="number"] {
+            width: 60px; /* Sufficient for 3 digits */
+        }
+
+        .editor-controls {
+            display: flex;
+            align-items: flex-end; /* Align items to the bottom */
+            gap: 20px;
+            margin-bottom: 10px;
+        }
+        .editor-controls .control-btn,
+        .editor-controls .control-group input,
+        .editor-controls button {
+            padding: 8px 12px;
+            box-sizing: border-box;
+        }
+
         @media (max-width: 1200px) {
             .main-layout { grid-template-columns: 1fr; }
             .sidebar { border-right: none; border-bottom: 1px solid var(--border-color); }
@@ -154,7 +176,12 @@ try {
 
     <div class="top-bar">
         <a href="index.php" class="back-link">&laquo; Back to Projects</a>
-        <span style="margin-left: 20px; font-weight: bold;"><?php echo $projectName; ?></span>
+        <span style="margin-left: 20px; font-weight: bold;">
+            <?php echo $projectName; ?>
+            <?php if ($patchId > 0): ?>
+                <span style="color: var(--text-light); font-weight: normal;"> / <?php echo $patchToEditName; ?></span>
+            <?php endif; ?>
+        </span>
     </div>
 
     <div class="container">
@@ -187,8 +214,21 @@ try {
                         <h3>Percussion (Bank 128)</h3>
                         <ul class="patch-list">
                              <?php
-                             // Placeholder for drum patches, can be implemented similarly
-                             echo '<li>No drum patches yet.</li>';
+                             $drumCount = 0;
+                             
+                             foreach ($allPatches as $p) {
+                                if ($p['patch_type'] === 'drum') {
+                                    $drumCount++;
+                                    $isActive = ($p['id'] == $patchId) ? ' active' : '';
+                                    echo '<li class="patch-item' . $isActive . '">';
+                                    echo '<div class="info"><span class="prog-num">' . $p['program_num'] . '</span><span class="preset-name">' . htmlspecialchars($p['preset_name'], ENT_QUOTES, 'UTF-8') . '</span></div>';
+                                    echo '<div class="actions">';
+                                    echo '<button class="preview-btn" data-program="' . $p['program_num'] . '" data-name="' . htmlspecialchars($p['preset_name'], ENT_QUOTES, 'UTF-8') . '" data-type="tone"><svg viewBox="0 0 24 24" fill="currentColor"><path d="M8,5.14V19.14L19,12.14L8,5.14Z" /></svg></button>';
+                                    echo '<a href="?id=' . $projectId . '&patch_id=' . $p['id'] . '" class="edit-btn"><svg viewBox="0 0 24 24" fill="currentColor"><path d="M20.71,7.04C21.1,6.65 21.1,6 20.71,5.63L18.37,3.29C18,2.9 17.35,2.9 16.96,3.29L15.12,5.12L18.87,8.87M3,17.25V21H6.75L17.81,9.93L14.06,6.18L3,17.25Z" /></svg></a>';
+                                    echo '</div></li>';
+                                }
+                            }
+                            if ($$drumCount === 0) echo '<li>No drum patches yet.</li>';
                              ?>
                         </ul>
                     </div>
@@ -209,10 +249,19 @@ try {
             <div class="main-content">
                 <?php if ($patchId > 0): ?>
                     <div id="editor-container">
-                        <h3>Waveform Editor: <em><?php echo $patchToEditName; ?></em></h3>
-                        <div style="margin-bottom: 10px;">
-                            <button id="btn-zoom-in" class="control-btn">+</button>
-                            <button id="btn-zoom-out" class="control-btn">-</button>
+                        <div class="editor-controls">
+                            <div>
+                                <label style="font-size: 0.9em; color: var(--text-light);">Zoom</label>
+                                <div>
+                                    <button id="btn-zoom-in" class="control-btn">+</button>
+                                    <button id="btn-zoom-out" class="control-btn">-</button>
+                                </div>
+                            </div>
+                            <div style="display: flex; align-items: flex-end; gap: 10px;">
+                                <div class="control-group"><label for="test-pitch">Pitch</label><input type="number" id="test-pitch" min="0" max="127" value="60"></div>
+                                <div class="control-group"><label for="test-velocity">Velocity</label><input type="number" id="test-velocity" min="0" max="127" value="100"></div>
+                                <div class="control-group"><label>&nbsp;</label><div><button id="btn-note-on">Note On</button><button id="btn-note-off">Note Off</button></div></div>
+                            </div>
                         </div>
                         <div id="waveform-container" style="border: 1px solid var(--border-color); border-bottom: none;">
                             <canvas id="waveform-canvas" class="waveform-canvas" width="1000" height="150"></canvas>
@@ -234,14 +283,6 @@ try {
                              </div>
                         </div>
                         <h3>Sample Properties</h3>
-                        <div class="editor-section">
-                            <h4>Playback</h4>
-                            <div class="control-grid">
-                                <div class="control-group"><label for="test-pitch">Pitch</label><input type="number" id="test-pitch" min="0" max="127" value="60"></div>
-                                <div class="control-group"><label for="test-velocity">Velocity</label><input type="number" id="test-velocity" min="0" max="127" value="100"></div>
-                                <div><button id="btn-note-on" style="margin-top: 23px;">Note On</button><button id="btn-note-off">Note Off</button></div>
-                            </div>
-                        </div>
                         <div class="editor-section">
                             <h4>Loop & Length</h4>
                             <div class="control-grid">
