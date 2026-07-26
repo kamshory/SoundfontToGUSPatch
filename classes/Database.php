@@ -76,4 +76,32 @@ class Database
         $stmt->execute([$projectId, $fileName, $patchType, $programNum, $bankNum, $presetName]);
         return $this->pdo->lastInsertId();
     }
+
+    /**
+     * Updates an existing patch or inserts a new one if it doesn't exist.
+     * Also returns the old filename if an update occurred, for cleanup purposes.
+     *
+     * @param int $projectId
+     * @param string $fileName
+     * @param string $patchType
+     * @param int $programNum
+     * @param int $bankNum
+     * @param string $presetName
+     * @return string|null The old filename if a patch was updated, otherwise null.
+     */
+    public function upsertPatchForProject($projectId, $fileName, $patchType, $programNum, $bankNum, $presetName)
+    {
+        $stmt = $this->pdo->prepare('SELECT id, file_name FROM patches WHERE project_id = ? AND program_num = ? AND patch_type = ?');
+        $stmt->execute([$projectId, $programNum, $patchType]);
+        $existing = $stmt->fetch();
+
+        if ($existing) {
+            $stmt = $this->pdo->prepare('UPDATE patches SET file_name = ?, preset_name = ?, bank_num = ? WHERE id = ?');
+            $stmt->execute([$fileName, $presetName, $bankNum, $existing['id']]);
+            return $existing['file_name']; // Return old filename for deletion
+        } else {
+            $this->addPatchToProject($projectId, $fileName, $patchType, $programNum, $bankNum, $presetName);
+            return null; // No old file to delete
+        }
+    }
 }

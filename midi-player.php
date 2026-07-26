@@ -93,6 +93,6 @@
     </main>
   </div>
   
-  <script type="module" src="assets/js/app.js"></script>
+  <script type="module" src="assets/js/midi-player.js"></script>
 </body>
 </html>

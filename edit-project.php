@@ -113,6 +113,19 @@ try {
         .preview-status { text-align: center; margin-top: 15px; height: 20px; color: var(--text-light); }
         
         /* Editor Styles (now in main content) */
+        .midi-player-section {
+            padding: 20px;
+            border: 1px solid var(--border-color);
+            border-radius: 8px;
+            margin-bottom: 25px;
+            background-color: #f8f9fa;
+        }
+        .midi-player-section .controls-section {
+            margin: 15px 0;
+        }
+        .midi-player-section .control-btn {
+            padding: 8px 15px;
+        }
         .editor-sidebar { display: flex; flex-direction: column; }
         .sample-list-item { padding: 8px; border-bottom: 1px solid #eee; cursor: pointer; border-radius: 4px; }
         .sample-list-item:hover { background-color: #e9ecef; }
@@ -237,7 +250,7 @@ try {
                     <h3>Add SF2 File</h3>
                     <form id="upload-form">
                         <input type="hidden" name="project_id" value="<?php echo $projectId; ?>">
-                        <input type="file" name="sf2file" id="sf2file" accept=".sf2" required>
+                        <input type="file" name="sf2file" id="sf2file" accept=".sf2,.zip" required>
                         <button type="submit" style="width: 100%; margin-top: 10px; padding: 10px; background-color: var(--green-color); color: white; border: none; border-radius: 6px; cursor: pointer;">Upload & Convert</button>
                     </form>
                     <div class="progress-wrapper">
@@ -247,6 +260,26 @@ try {
                 </div>
             </div>
             <div class="main-content">
+                <div class="midi-player-section">
+                    <h3>Project MIDI Player</h3>
+                    <div class="upload-section">
+                        <label for="midi-upload" class="upload-btn" style="padding: 8px 12px; border: 1px solid var(--border-color); border-radius: 5px; cursor: pointer;">
+                            Select MIDI File
+                        </label>
+                        <input type="file" id="midi-upload" accept=".mid,.midi" style="display: none;">
+                        <span id="file-name" style="margin-left: 15px; color: var(--text-light);">No file selected</span>
+                    </div>
+                    <div class="controls-section">
+                        <button id="btn-play" class="control-btn play" disabled>Play</button>
+                        <button id="btn-pause" class="control-btn" disabled>Pause</button>
+                        <button id="btn-stop" class="control-btn" disabled>Stop</button>
+                    </div>
+                    <div class="status-panel">
+                        <span id="status-text" style="font-weight: 500;">Waiting for file...</span>
+                        <input type="range" id="seek-slider" class="seek-slider" min="0" max="100" step="0.1" value="0" disabled style="width: 100%; margin-top: 10px;">
+                    </div>
+                </div>
+
                 <?php if ($patchId > 0): ?>
                     <div id="editor-container">
                         <div class="editor-controls">
@@ -357,6 +390,7 @@ try {
     <script type="module">
         import { MidiSynth } from './assets/js/audio.js';
         import { GusEditorApp } from './assets/js/gus-editor-app.js';
+        import { PlanetMidi } from './assets/js/app.js';
         import { DRUM_ICON_SET, DRUM_NOTE_MAP } from './assets/js/midi-icons.js';
 
         document.addEventListener('DOMContentLoaded', function() {
@@ -372,8 +406,24 @@ try {
             const previewStatus = previewModal.querySelector('.preview-status');
             const previewTitle = previewModal.querySelector('#preview-title');
 
+            // Initialize MIDI Player for the project
+            const midiPlayer = new PlanetMidi({
+                uploadInputId: 'midi-upload',
+                fileNameDisplayId: 'file-name',
+                btnPlayId: 'btn-play',
+                btnPauseId: 'btn-pause',
+                btnStopId: 'btn-stop',
+                statusTextId: 'status-text',
+                infoPanelId: 'info-panel', // This element doesn't exist here, but that's okay
+                seekSliderId: 'seek-slider',
+                sampleRate: 44100,
+                bufferSize: 8192,
+                timidityCfg: 'timidity.cfg',
+                patchUrlBase: `./${projectDir}/`,
+            });
+
             let editorApp; // Instance of GusEditorApp
-            let synth;
+            let instrumentPreviewSynth;
             let isSynthReady = false;
 
             function handleUpload() {
@@ -392,7 +442,13 @@ try {
 
                     const formData = new FormData(uploadForm);
                     const xhr = new XMLHttpRequest();
-                    xhr.open('POST', 'api/editor.php?action=upload_sf2', true);
+                    
+                    const file = fileInput.files[0];
+                    const extension = file.name.split('.').pop().toLowerCase();
+                    // Use the correct action based on file type, although backend now auto-detects
+                    const action = (extension === 'zip' || extension === 'pat') ? 'upload_pat' : 'upload_sf2';
+
+                    xhr.open('POST', `api/editor.php?action=${action}`, true);
 
                     xhr.upload.addEventListener('progress', function(e) {
                         if (e.lengthComputable) {
@@ -459,13 +515,13 @@ try {
             // --- Preview Functionality ---
 
             async function initSynth() {
-                if (synth) return;
-                synth = new MidiSynth({
+                if (instrumentPreviewSynth) return;
+                instrumentPreviewSynth = new MidiSynth({
                     patchUrlBase: `./${projectDir}/`, // e.g., './projects/MyProject_123/'
                     timidityCfg: `timidity.cfg`      // Just the filename
                 });
                 try {
-                    await synth._initForLivePlayback();
+                    await instrumentPreviewSynth._initForLivePlayback();
                     isSynthReady = true;
                     previewStatus.textContent = 'Ready to play.';
                 } catch (e) {
@@ -527,16 +583,16 @@ try {
                 }
 
                 previewStatus.textContent = `Loading instrument #${program}...`;
-                await synth.programChange(channel, program);
+                await instrumentPreviewSynth.programChange(channel, program);
                 previewStatus.textContent = 'Ready to play.';
 
                 const playHandler = (e) => {
                     if (e.target.classList.contains('key')) {
                         const note = parseInt(e.target.dataset.note, 10);
-                        synth.noteOn(channel, note, 100); // Velocity 100
+                        instrumentPreviewSynth.noteOn(channel, note, 100); // Velocity 100
                         e.target.classList.add('active');
                         const releaseHandler = () => {
-                            synth.noteOff(channel, note);
+                            instrumentPreviewSynth.noteOff(channel, note);
                             e.target.classList.remove('active');
                             pianoContainer.removeEventListener('mouseup', releaseHandler);
                             pianoContainer.removeEventListener('mouseleave', releaseHandler);
@@ -546,7 +602,7 @@ try {
                     } else if (e.target.closest('.drum-pad')) {
                         const pad = e.target.closest('.drum-pad');
                         const note = parseInt(pad.dataset.note, 10);
-                        synth.noteOn(channel, note, 100); // Velocity 100
+                        instrumentPreviewSynth.noteOn(channel, note, 100); // Velocity 100
                         pad.classList.add('active');
                         setTimeout(() => pad.classList.remove('active'), 150);
                     }
@@ -562,7 +618,9 @@ try {
 
                 // Ensure the editor container exists before initializing
                 if (document.getElementById('editor-container')) {
-                    editorApp = new GusEditorApp();
+                    // Initialize the dedicated synth for the sample editor
+                    const sampleEditorSynth = new MidiSynth();
+                    editorApp = new GusEditorApp(sampleEditorSynth);
                     try {
                     const response = await fetch(`api/editor.php?action=get_patch_data&patch_id=${patchId}`);
                     if (!response.ok) throw new Error(`Server responded with ${response.status}`);
@@ -597,7 +655,7 @@ try {
             previewModal.querySelector('.close-btn').addEventListener('click', () => {
                 previewModal.style.display = 'none';
                 // Stop any hanging notes if the modal is closed
-                if (synth) for (let i=0; i<128; i++) synth.noteOff(0, i), synth.noteOff(9, i);
+                if (instrumentPreviewSynth) for (let i=0; i<128; i++) instrumentPreviewSynth.noteOff(0, i), instrumentPreviewSynth.noteOff(9, i);
             });
         });
     </script>

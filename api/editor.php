@@ -39,6 +39,7 @@ try {
             break;
 
         case 'upload_sf2':
+        case 'upload_pat':
             $projectId = isset($_POST['project_id']) ? (int)$_POST['project_id'] : 0;
             if ($projectId === 0) {
                 throw new Exception('Invalid Project ID.');
@@ -55,6 +56,19 @@ try {
 
             $outputDir = $projectsBaseDir . '/' . $project['directory_path'];
 
+            // Handle file upload
+            if (!isset($_FILES['sf2file']) || $_FILES['sf2file']['error'] !== UPLOAD_ERR_OK) {
+                throw new Exception('File upload failed.');
+            }
+            $uploadedFile = $_FILES['sf2file'];
+            $uploadPath = $uploadedFile['tmp_name'];
+            // Ensure tone/drum directories exist
+            $toneDir = $outputDir . "/tone";
+            $drumDir = $outputDir . "/drum";
+            if (!is_dir($toneDir)) mkdir($toneDir, 0777, true);
+            if (!is_dir($drumDir)) mkdir($drumDir, 0777, true);
+
+
             // --- Logic to handle patch updates ---
             // 1. Get a list of all existing patch files for this project before conversion.
             $stmtOldFiles = $pdo->prepare('SELECT id, file_name FROM patches WHERE project_id = ?');
@@ -62,22 +76,110 @@ try {
             $oldPatches = $stmtOldFiles->fetchAll(PDO::FETCH_KEY_PAIR); // [id => file_name]
             // ---
 
-            // Handle file upload
-            if (!isset($_FILES['sf2file']) || $_FILES['sf2file']['error'] !== UPLOAD_ERR_OK) {
-                throw new Exception('File upload failed.');
+            // Determine file type by content signature, not extension
+            $fp = fopen($uploadPath, 'rb');
+            if (!$fp) {
+                throw new Exception('Could not open uploaded file for inspection.');
             }
+            $fileSignature = fread($fp, 4);
+            fclose($fp);
 
-            $sf2FilePath = $_FILES['sf2file']['tmp_name'];
-            if (strtolower(pathinfo($_FILES['sf2file']['name'], PATHINFO_EXTENSION)) !== 'sf2') {
-                throw new Exception('Invalid file type. Only .sf2 files are allowed.');
+            if ($fileSignature === 'RIFF') { // This is an SF2 file
+                // Run conversion for SF2
+                $converter = new SoundfontToGusPatch();
+                $converter->setLogger(function ($message) { /* Silent for API */ });
+                $converter->setDatabase($db);
+                $converter->setProjectId($projectId);
+                $converter->convert($uploadPath, $outputDir);
+
+            } elseif (substr($fileSignature, 0, 2) === 'PK') { // This is a ZIP file
+                // Handle ZIP file upload
+                $zip = new ZipArchive;
+                if ($zip->open($uploadPath) !== TRUE) {
+                    throw new Exception('Failed to open ZIP archive.');
+                }
+
+                // Find the main .cfg file
+                $cfgFileIndex = -1;
+                for ($i = 0; $i < $zip->numFiles; $i++) {
+                    $filename = $zip->getNameIndex($i);
+                    if (strtolower(pathinfo($filename, PATHINFO_EXTENSION)) === 'cfg') {
+                        $cfgFileIndex = $i;
+                        break;
+                    }
+                }
+
+                if ($cfgFileIndex === -1) {
+                    throw new Exception('No .cfg file found in the ZIP archive.');
+                }
+
+                $originalCfgContent = $zip->getFromIndex($cfgFileIndex);
+                $newCfgContent = "# Auto-generated mapping from ZIP\ndir .\n\n";
+                $lines = explode("\n", $originalCfgContent);
+                $isDrum = false;
+                $currentBank = 0;
+
+                foreach ($lines as $line) {
+                    $line = trim(explode('#', $line)[0]);
+                    if (empty($line)) continue;
+
+                    $parts = preg_split('/\s+/', $line);
+                    $command = strtolower($parts[0]);
+
+                    if ($command === 'bank') {
+                        $isDrum = false;
+                        $currentBank = (int)$parts[1];
+                        $newCfgContent .= $line . "\n";
+                    } elseif ($command === 'drumset') {
+                        $isDrum = true;
+                        $currentBank = (int)$parts[1];
+                        $newCfgContent .= $line . "\n";
+                    } elseif (count($parts) >= 2 && is_numeric($parts[0])) {
+                        $progNum = (int)$parts[0];
+                        $originalPatPath = $parts[1];
+                        $patFileName = basename($originalPatPath);
+
+                        // Find the patch file in the zip
+                        $patFileIndex = $zip->locateName($originalPatPath, ZipArchive::FL_NOCASE);
+                        if ($patFileIndex === false) {
+                             // Try finding just by basename
+                            for ($j = 0; $j < $zip->numFiles; $j++) {
+                                if (strcasecmp(basename($zip->getNameIndex($j)), $patFileName) == 0) {
+                                    $patFileIndex = $j;
+                                    break;
+                                }
+                            }
+                        }
+
+                        if ($patFileIndex !== false) {
+                            $patchType = $isDrum ? 'drum' : 'tone';
+                            $destDir = $isDrum ? $drumDir : $toneDir;
+                            $newRelativePath = "{$patchType}/{$patFileName}";
+                            $destinationPath = "{$destDir}/{$patFileName}";
+
+                            // Extract patch to the correct project directory
+                            file_put_contents($destinationPath, $zip->getFromIndex($patFileIndex));
+
+                            // Update the line for the new timidity.cfg
+                            $parts[1] = $newRelativePath;
+                            $newCfgContent .= implode(' ', $parts) . "\n";
+
+                            // Upsert into database
+                            $db->upsertPatchForProject($projectId, $newRelativePath, $patchType, $progNum, $currentBank, $patFileName);
+                        }
+                    } else {
+                        // Copy other directives as-is
+                        $newCfgContent .= $line . "\n";
+                    }
+                }
+
+                // Write the new, corrected timidity.cfg
+                file_put_contents($outputDir . '/timidity.cfg', $newCfgContent);
+                $zip->close();
+
+            } else {
+                throw new Exception('Invalid file type. Only .sf2 or .zip files are allowed.');
             }
-
-            // Run conversion
-            $converter = new SoundfontToGusPatch();
-            $converter->setLogger(function ($message) { /* Silent for API */ });
-            $converter->setDatabase($db);
-            $converter->setProjectId($projectId);
-            $converter->convert($sf2FilePath, $outputDir);
 
             // --- Logic to clean up old/updated patches ---
             // 2. Get the list of patches after conversion.

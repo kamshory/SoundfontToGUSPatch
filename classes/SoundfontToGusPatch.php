@@ -409,7 +409,7 @@ class SoundfontToGusPatch
             ksort($sortedPrograms);
             foreach ($sortedPrograms as $progNum => $mappings) {
                 foreach ($mappings as $map) {
-                    $cfgContent .= sprintf("%+3d %s\n", $progNum, $map['path']);
+                    $cfgContent .= sprintf("%3d %s\n", $progNum, $map['path']);
                 }
             }
         }

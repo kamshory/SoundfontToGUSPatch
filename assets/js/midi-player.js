@@ -16,7 +16,7 @@ import { MidiSynth } from './audio.js';
  * - setVolume(volume)
  * - async renderOffline()
  */
-export class PlanetMidi {
+class PlanetMidi {
   constructor(options) {
     // Instance #1: Untuk pemutaran utama dan render offline
     this.synth = new MidiSynth({
@@ -95,27 +95,21 @@ export class PlanetMidi {
     trackSelector.className = 'track-selector-panel glass-panel';
     trackSelector.style.maxHeight = '150px'; // Set a max height
     trackSelector.style.overflowY = 'auto'; // Enable vertical scroll
-    if (this.ui.infoPanel) {
-      this.ui.infoPanel.insertAdjacentElement('afterend', trackSelector);
-    }
+    this.ui.infoPanel.insertAdjacentElement('afterend', trackSelector);
   }
 
   _populatePreviewControls() {
-    if (this.ui.previewChannel) {
-      // Populate channels 0-15
-      for (let i = 0; i < 16; i++) {
-        const option = new Option(i === 9 ? `Channel ${i} (Drums)` : `Channel ${i}`, i);
-        this.ui.previewChannel.add(option);
-      }
+    // Populate channels 0-15
+    for (let i = 0; i < 16; i++) {
+      const option = new Option(i === 9 ? `Channel ${i} (Drums)` : `Channel ${i}`, i);
+      this.ui.previewChannel.add(option);
     }
 
-    if (this.ui.previewInstrument) {
-      // Populate instruments 0-127
-      // A real app would use GM instrument names here.
-      for (let i = 0; i < 128; i++) {
-        const option = new Option(`Program ${i}`, i);
-        this.ui.previewInstrument.add(option);
-      }
+    // Populate instruments 0-127
+    // A real app would use GM instrument names here.
+    for (let i = 0; i < 128; i++) {
+      const option = new Option(`Program ${i}`, i);
+      this.ui.previewInstrument.add(option);
     }
   }
 
@@ -190,31 +184,27 @@ export class PlanetMidi {
 
     this.ui.btnRender.addEventListener('click', () => this.renderOffline());
 
-    // --- Sound Preview Listeners (only if UI exists) ---
-    if (this.ui.btnNoteOn) {
-      this.ui.btnNoteOn.addEventListener('click', async () => {
-        await this.resumeTestContext(); // Gunakan konteks audio dari instance testSynth
-        const channel = parseInt(this.ui.previewChannel.value, 10);
-        const program = parseInt(this.ui.previewInstrument.value, 10);
-        const pitch = parseInt(this.ui.previewPitch.value, 10);
-        const velocity = parseInt(this.ui.previewVelocity.value, 10);
-        const pan = parseInt(this.ui.previewPan.value, 10);
+    // Sound Preview Listeners
+    this.ui.btnNoteOn.addEventListener('click', async () => {
+      await this.resumeTestContext(); // Gunakan konteks audio dari instance testSynth
+      const channel = parseInt(this.ui.previewChannel.value, 10);
+      const program = parseInt(this.ui.previewInstrument.value, 10);
+      const pitch = parseInt(this.ui.previewPitch.value, 10);
+      const velocity = parseInt(this.ui.previewVelocity.value, 10);
+      const pan = parseInt(this.ui.previewPan.value, 10);
 
-        // For non-drum channels, set the instrument first
-        if (channel !== 9) {
-          await this.testSynth.programChange(channel, program); // Gunakan testSynth
-        }
-        this.testSynth.noteOn(channel, pitch, velocity, pan); // Gunakan testSynth dengan pan yang benar
-      });
-    }
+      // For non-drum channels, set the instrument first
+      if (channel !== 9) {
+        await this.testSynth.programChange(channel, program); // Gunakan testSynth
+      }
+      this.testSynth.noteOn(channel, pitch, velocity, pan); // Gunakan testSynth dengan pan yang benar
+    });
 
-    if (this.ui.btnNoteOff) {
-      this.ui.btnNoteOff.addEventListener('click', () => {
-        const channel = parseInt(this.ui.previewChannel.value, 10);
-        const pitch = parseInt(this.ui.previewPitch.value, 10);
-        this.testSynth.noteOff(channel, pitch); // Gunakan testSynth
-      });
-    }
+    this.ui.btnNoteOff.addEventListener('click', () => {
+      const channel = parseInt(this.ui.previewChannel.value, 10);
+      const pitch = parseInt(this.ui.previewPitch.value, 10);
+      this.testSynth.noteOff(channel, pitch); // Gunakan testSynth
+    });
   }
 
   // --- Public API ---
@@ -233,9 +223,7 @@ export class PlanetMidi {
     this.ui.btnPause.disabled = true;
     this.ui.btnStop.disabled = true;
     this.ui.btnRender.disabled = true;
-    if (this.ui.infoPanel) {
-      this.ui.infoPanel.innerHTML = "";
-    }
+    this.ui.infoPanel.innerHTML = "";
 
     try {
       // Clear previous track selector
@@ -273,14 +261,12 @@ export class PlanetMidi {
         return;
       }
 
-      if (this.ui.infoPanel) {
-        this.ui.infoPanel.innerHTML = `
-          <strong>Track Info:</strong><br>
-          Events: ${this.parsedData.count}<br>
-          Total Samples: ${this.parsedData.samples} @ 44.1kHz<br>
-          Duration: ${this.synth.duration.toFixed(2)} seconds
-        `;
-      }
+      this.ui.infoPanel.innerHTML = `
+        <strong>Track Info:</strong><br>
+        Events: ${this.parsedData.count}<br>
+        Total Samples: ${this.parsedData.samples} @ 44.1kHz<br>
+        Duration: ${this.synth.duration.toFixed(2)} seconds
+      `;
 
       this.ui.btnPlay.disabled = false;
       this.ui.btnRender.disabled = false;
@@ -446,6 +432,6 @@ document.addEventListener('DOMContentLoaded', () => {
     bufferSize: 8192,
 
     timidityCfg: 'timidity.cfg',
-    patchUrlBase: './projects/Rolan_1785063654/',
+    patchUrlBase: '././projects/Project_2_1785109247/',
   });
 });
