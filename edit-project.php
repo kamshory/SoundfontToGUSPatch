@@ -228,7 +228,7 @@ try {
                                     echo '</div></li>';
                                 }
                             }
-                            if ($$drumCount === 0) echo '<li>No drum patches yet.</li>';
+                            if ($drumCount === 0) echo '<li>No drum patches yet.</li>';
                              ?>
                         </ul>
                     </div>

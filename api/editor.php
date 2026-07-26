@@ -55,6 +55,13 @@ try {
 
             $outputDir = $projectsBaseDir . '/' . $project['directory_path'];
 
+            // --- Logic to handle patch updates ---
+            // 1. Get a list of all existing patch files for this project before conversion.
+            $stmtOldFiles = $pdo->prepare('SELECT id, file_name FROM patches WHERE project_id = ?');
+            $stmtOldFiles->execute([$projectId]);
+            $oldPatches = $stmtOldFiles->fetchAll(PDO::FETCH_KEY_PAIR); // [id => file_name]
+            // ---
+
             // Handle file upload
             if (!isset($_FILES['sf2file']) || $_FILES['sf2file']['error'] !== UPLOAD_ERR_OK) {
                 throw new Exception('File upload failed.');
@@ -72,7 +79,31 @@ try {
             $converter->setProjectId($projectId);
             $converter->convert($sf2FilePath, $outputDir);
 
-            echo json_encode(['success' => true, 'message' => 'SF2 converted and added to project ' . $projectId]);
+            // --- Logic to clean up old/updated patches ---
+            // 2. Get the list of patches after conversion.
+            $stmtNewFiles = $pdo->prepare('SELECT file_name FROM patches WHERE project_id = ?');
+            $stmtNewFiles->execute([$projectId]);
+            $newPatchFiles = $stmtNewFiles->fetchAll(PDO::FETCH_COLUMN);
+            $newPatchFilesSet = array_flip($newPatchFiles); // Use as a fast-lookup set
+
+            $deletedCount = 0;
+            // 3. Compare old list with new list and delete what's no longer needed.
+            foreach ($oldPatches as $patchId => $oldFileName) {
+                if (!isset($newPatchFilesSet[$oldFileName])) {
+                    // This file is no longer part of the project, delete it.
+                    $fullPath = $outputDir . '/' . $oldFileName;
+                    if (file_exists($fullPath)) {
+                        unlink($fullPath);
+                    }
+                    // Also remove from database
+                    $stmtDelete = $pdo->prepare('DELETE FROM patches WHERE id = ?');
+                    $stmtDelete->execute([$patchId]);
+                    $deletedCount++;
+                }
+            }
+            // ---
+
+            echo json_encode(['success' => true, 'message' => 'SF2 converted. ' . ($deletedCount > 0 ? "$deletedCount old patches cleaned up." : "")]);
             break;
 
         case 'get_project_details':

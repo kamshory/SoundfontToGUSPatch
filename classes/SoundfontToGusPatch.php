@@ -213,6 +213,9 @@ class SoundfontToGusPatch
         $numPbagEntries = (int)(strlen($this->pdtaChunks['pbag']) / 4);
         $numIbagEntries = (int)(strlen($this->pdtaChunks['ibag']) / 4);
 
+        // Clear the map for each conversion run
+        $this->timidityMap = [];
+
         foreach ($this->phdr_list as $pIdx => $p) {
             $presetName = rtrim(substr($p, 0, 20), "\0");
             $program = unpack('v', substr($p, 20, 2))[1];
@@ -236,9 +239,18 @@ class SoundfontToGusPatch
                     ? unpack('v', substr($this->pdtaChunks['pbag'], $nextPbagOffset, 2))[1]
                     : (int)(strlen($this->pdtaChunks['pgen']) / 4);
 
+                // Default key range for the preset zone
+                $p_keyRangeLow = 0;
+                $p_keyRangeHigh = 127;
+
                 for ($j = $pgen_start_idx; $j < $pgen_end_idx; $j++) {
                     $gen_id = unpack('v', substr($this->pdtaChunks['pgen'], $j * 4, 2))[1];
                     
+                    if ($gen_id == 43) { // keyRange for preset zone
+                        $p_keyRangeLow = unpack('C', substr($this->pdtaChunks['pgen'], $j * 4 + 2, 1))[1];
+                        $p_keyRangeHigh = unpack('C', substr($this->pdtaChunks['pgen'], $j * 4 + 3, 1))[1];
+                    }
+
                     if ($gen_id == 41) { // instrument generator
                         $inst_id = unpack('v', substr($this->pdtaChunks['pgen'], $j * 4 + 2, 2))[1];
                         if (!isset($this->inst_list[$inst_id])) continue;
@@ -284,7 +296,8 @@ class SoundfontToGusPatch
                 $s_loop_start = unpack('V', substr($s_chunk, 28, 4))[1];
                 $s_loop_end = unpack('V', substr($s_chunk, 32, 4))[1];
                 $s_rate = unpack('V', substr($s_chunk, 36, 4))[1];
-                $s_pitch = ord(substr($s_chunk, 40, 1));
+                $s_pitch = ord(substr($s_chunk, 40, 1)); // byOriginalPitch
+                $s_pitch_correction = unpack('c', substr($s_chunk, 41, 1))[1]; // chPitchCorrection (signed char)
                 $s_type = unpack('v', substr($s_chunk, 44, 2))[1];
 
                 if (($s_type & 0x7FFF) !== 1 && ($s_type & 0x7FFF) !== 4) continue;
@@ -293,12 +306,32 @@ class SoundfontToGusPatch
                 if ($pcmLenBytes <= 0) continue;
 
                 fseek($this->fp, $this->smplOffset + ($s_start * 2));
-                $currentPcm = fread($this->fp, $pcmLenBytes);
-                if (strlen($currentPcm) == 0) continue;
+                $rawPcm = fread($this->fp, $pcmLenBytes);
+                if (strlen($rawPcm) == 0) continue;
+
+                // CRITICAL FIX: Explicitly enforce little-endian for sample data.
+                // Read each 16-bit sample and re-pack it to ensure correct byte order,
+                // regardless of the server's architecture.
+                $currentPcm = '';
+                $numSamples = $pcmLenBytes / 2;
+                for ($j = 0; $j < $numSamples; $j++) {
+                    // 's' is signed 16-bit, unpack assumes machine-endian. 'v' forces little-endian pack.
+                    $currentPcm .= pack('v', unpack('s', substr($rawPcm, $j * 2, 2))[1]);
+                }
 
                 $loopStartByte = ($s_loop_start - $s_start) * 2;
                 $loopEndByte = ($s_loop_end - $s_start) * 2;
-                $rootFreqHz = round(440 * pow(2, ($s_pitch - 69) / 12));
+
+                // Correct root frequency calculation including pitch correction (in cents)
+                $cents = $s_pitch_correction;
+                $midiNoteWithCents = $s_pitch + ($cents / 100.0);
+                $rootFreqHz = round(440 * pow(2, ($midiNoteWithCents - 69) / 12));
+
+                // CRITICAL FIX #2: Normalize the sample rate based on the root frequency.
+                // TiMidity relies on the sample_rate field to determine the base pitch (C4).
+                // We adjust the sample rate so that the original pitch of the sample
+                // will sound correct when played back as a C4 note.
+                $adjustedSampleRate = round($s_rate * $rootFreqHz / 261.625565); // 261.62... Hz is C4
 
                 $modes = 0x01; // 16-bit, signed
                 if ($loopStartByte < $loopEndByte) {
@@ -311,7 +344,7 @@ class SoundfontToGusPatch
                 $waveHeader .= pack('V', $pcmLenBytes);
                 $waveHeader .= pack('V', $loopStartByte);
                 $waveHeader .= pack('V', $loopEndByte);
-                $waveHeader .= pack('v', $s_rate);
+                $waveHeader .= pack('v', $adjustedSampleRate);
                 $waveHeader .= pack('V', 0);
                 $waveHeader .= pack('V', 2000000);
                 $waveHeader .= pack('V', $rootFreqHz);
@@ -344,8 +377,13 @@ class SoundfontToGusPatch
             $cleanName = preg_replace('/[^a-zA-Z0-9_\-]/', '_', $presetName);
             $outFileName = "{$formattedMidiNum}_" . strtolower($cleanName) . '.pat';
             $outPath = $targetDir . '/' . $outFileName;
-
-            $this->timidityMap[$typeFolder][$program] = "{$typeFolder}/{$outFileName}";
+            
+            // This needs to be an array of arrays to support key-splits (multiple .pat per program)
+            $this->timidityMap[$typeFolder][$program][] = [
+                'path' => "{$typeFolder}/{$outFileName}",
+                'low' => 0, // Default to full range since we are not splitting yet
+                'high' => 127
+            ];
 
             // Save to database if project ID is set
             if ($this->db && $this->projectId) {
@@ -367,18 +405,23 @@ class SoundfontToGusPatch
         $cfgContent .= "# BANK 0 (Melodic)\n";
         $cfgContent .= "bank 0\n\n";
         if (isset($this->timidityMap['tone'])) {
-            ksort($this->timidityMap['tone']);
-            foreach ($this->timidityMap['tone'] as $progNum => $relPath) {
-                $cfgContent .= sprintf("%-3d %s\n", $progNum, $relPath);
+            $sortedPrograms = $this->timidityMap['tone'];
+            ksort($sortedPrograms);
+            foreach ($sortedPrograms as $progNum => $mappings) {
+                foreach ($mappings as $map) {
+                    $cfgContent .= sprintf("%+3d %s\n", $progNum, $map['path']);
+                }
             }
         }
 
         $cfgContent .= "\n\n# DRUMSET 0 (Percussion)\n";
         $cfgContent .= "drumset 0\n\n";
         if (isset($this->timidityMap['drum'])) {
-            ksort($this->timidityMap['drum']);
-            foreach ($this->timidityMap['drum'] as $progNum => $relPath) {
-                $cfgContent .= sprintf("%-3d %s\n", $progNum, $relPath);
+            $sortedDrums = $this->timidityMap['drum'];
+            ksort($sortedDrums);
+            foreach ($sortedDrums as $progNum => $mappings) {
+                // Drums usually map 1:1, but we use the same logic for consistency
+                $cfgContent .= sprintf("%-3d %s\n", $progNum, $mappings[0]['path']);
             }
         }
 
