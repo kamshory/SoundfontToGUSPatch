@@ -80,6 +80,10 @@ try {
         .patch-item .info .preset-name { color: var(--text-light); font-size: 0.9em; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
         .patch-item .actions a, .patch-item .actions button { margin-left: 5px; padding: 4px 4px; border-radius: 5px; border: none; color: #fff; cursor: pointer; font-weight: 500; transition: opacity 0.2s; display: inline-flex; align-items: center; justify-content: center; }
         .patch-item .actions button:hover { opacity: 0.85; }
+        .actions {
+            text-align: right;
+            white-space: nowrap;
+        }
         .actions .edit-btn { background-color: var(--yellow-color); color: #212529; }
         .actions .preview-btn { background-color: var(--blue-color); }
         .actions svg { width: 16px; height: 16px; }
@@ -406,8 +410,15 @@ try {
             const previewStatus = previewModal.querySelector('.preview-status');
             const previewTitle = previewModal.querySelector('#preview-title');
 
+            // CRITICAL FIX: Create a single, shared AudioContext for all synth instances on this page.
+            // This prevents resource conflicts, audio glitches, and browser hanging.
+            const sharedAudioContext = new (window.AudioContext || window.webkitAudioContext)({
+                sampleRate: 44100,
+            });
+
             // Initialize MIDI Player for the project
             const midiPlayer = new PlanetMidi({
+                audioContext: sharedAudioContext, // Pass the shared context
                 uploadInputId: 'midi-upload',
                 fileNameDisplayId: 'file-name',
                 btnPlayId: 'btn-play',
@@ -416,7 +427,7 @@ try {
                 statusTextId: 'status-text',
                 infoPanelId: 'info-panel', // This element doesn't exist here, but that's okay
                 seekSliderId: 'seek-slider',
-                sampleRate: 44100,
+                // sampleRate is now derived from the shared context
                 bufferSize: 8192,
                 timidityCfg: 'timidity.cfg',
                 patchUrlBase: `./${projectDir}/`,
@@ -517,6 +528,7 @@ try {
             async function initSynth() {
                 if (instrumentPreviewSynth) return;
                 instrumentPreviewSynth = new MidiSynth({
+                    audioContext: sharedAudioContext, // Use the shared context
                     patchUrlBase: `./${projectDir}/`, // e.g., './projects/MyProject_123/'
                     timidityCfg: `timidity.cfg`      // Just the filename
                 });
@@ -618,8 +630,9 @@ try {
 
                 // Ensure the editor container exists before initializing
                 if (document.getElementById('editor-container')) {
-                    // Initialize the dedicated synth for the sample editor
-                    const sampleEditorSynth = new MidiSynth();
+                    // Initialize the dedicated synth for the sample editor.
+                    // It does not need a config file, but it MUST share the AudioContext.
+                    const sampleEditorSynth = new MidiSynth({ audioContext: sharedAudioContext });
                     editorApp = new GusEditorApp(sampleEditorSynth);
                     try {
                     const response = await fetch(`api/editor.php?action=get_patch_data&patch_id=${patchId}`);

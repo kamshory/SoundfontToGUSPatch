@@ -449,11 +449,11 @@ export class InstrumentLoader {
       offset += 40; // Skip scale and reserved
 
       let modeStr = [];
-      if (sp.modes & MODES_16BIT) modeStr.push("16-bit"); else modeStr.push("8-bit");
+      if (sp.modes & MODES_16BIT)    modeStr.push("16-bit");   else modeStr.push("8-bit");
       if (sp.modes & MODES_UNSIGNED) modeStr.push("unsigned"); else modeStr.push("signed");
-      if (sp.modes & MODES_LOOPING) modeStr.push("looping");
+      if (sp.modes & MODES_LOOPING)  modeStr.push("looping");
       if (sp.modes & MODES_PINGPONG) modeStr.push("ping-pong");
-      if (sp.modes & MODES_REVERSE) modeStr.push("reverse");
+      if (sp.modes & MODES_REVERSE)  modeStr.push("reverse");
       if (sp.modes & MODES_ENVELOPE) modeStr.push("envelope");
       
       if (sp.modes & MODES_LOOPING) sp.modes |= MODES_SUSTAIN; // MODES_LOOPING -> MODES_SUSTAIN

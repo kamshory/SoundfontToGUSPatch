@@ -1,0 +1,282 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>GUS Patch Editor</title>
+  <link rel="stylesheet" href="style.css">
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;600;800&display=swap" rel="stylesheet">
+  <style>
+    /* Override default body styles for a full-screen experience */
+    html, body {
+      height: 100%;
+      overflow: auto; /* Allow scrolling on smaller screens */
+    }
+    body {
+      display: block; /* Disable flex centering */
+      padding: 0px;
+      margin: 0px;
+    
+    }
+    /* Make the main container take up the full screen */
+    .container {
+      width: 100%;
+      max-width: none;
+      height: 100%;
+      padding: 15px;
+      display: flex;
+      flex-direction: column;
+    }
+    .editor-container {
+      display: grid;
+      grid-template-columns: 300px 1fr;
+      gap: 20px;
+      flex-grow: 1; /* Allow this container to fill available space */
+      min-height: 0; /* Prevent grid from overflowing its container */
+    }
+    .sidebar, .main-content {
+      padding: 20px;
+      overflow-y: auto; /* Allow individual panels to scroll */
+    }
+    .sample-list-item {
+      padding: 8px;
+      border-bottom: 1px solid rgba(255, 255, 255, 0.2);
+      cursor: pointer;
+    }
+    .sample-list-item.active {
+      background-color: rgba(0, 120, 255, 0.3);
+    }
+    .waveform-canvas {
+      width: 100%;
+      height: 150px;
+      background-color: rgba(0, 0, 0, 0.3);
+      border: 1px solid rgba(255, 255, 255, 0.3);
+      margin-top: 10px;
+    }
+    .waveform-container {
+      position: relative;
+      width: 100%;
+    }
+    .control-grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+      gap: 15px;
+    }
+    .envelope-editor {
+        display: grid;
+        grid-template-columns: repeat(6, 1fr);
+        gap: 10px;
+        margin-top: 10px;
+    }
+    .editor-section {
+      margin-top: 25px;
+      padding-top: 20px;
+      border-top: 1px solid var(--glass-border);
+    }
+    .modal-overlay {
+      position: fixed;
+      top: 0;
+      left: 0;
+      width: 100%;
+      height: 100%;
+      background-color: rgba(0, 0, 0, 0.7);
+      backdrop-filter: blur(5px);
+      display: flex;
+      justify-content: center;
+      align-items: center;
+      z-index: 1000;
+    }
+    .modal-content {
+      width: 90%;
+      max-width: 900px;
+      max-height: 90vh;
+      overflow-y: auto;
+    }
+    .modal-header {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      margin-bottom: 20px;
+    }
+    .editor-section:first-child { margin-top: 0; padding-top: 0; border-top: none; }
+    .envelope-point { text-align: center; }
+
+    /* Responsive layout for smaller screens */
+    @media (max-width: 768px) {
+      .editor-container {
+        grid-template-columns: 1fr; /* Stack sidebar and main content vertically */
+      }
+    }
+  </style>
+</head>
+<body>
+  <div class="background-anim"></div>
+
+  <div class="container">
+    <div class="glass-panel" style="margin-bottom: 20px; padding: 15px;">
+        <button id="btn-new-patch" class="control-btn">New Patch</button>
+        <label for="patch-upload" class="control-btn">Load Patch</label>
+        <input type="file" id="patch-upload" accept=".pat" style="display: none;">
+        <button id="btn-save-patch" class="control-btn" disabled>Save Patch</button>
+        <span id="patch-file-name" style="margin-left: 20px;">No patch loaded.</span>
+    </div>
+
+    <div class="editor-container">
+      <div class="sidebar glass-panel">
+        <div style="display: flex; flex-direction: column; height: 100%;">
+            <h3>Instrument Properties</h3>
+            <div class="control-group">
+                <label for="instrument-name">Instrument Name</label>
+                <input type="text" id="instrument-name" maxlength="60" placeholder="e.g., Grand Piano">
+            </div>
+            <hr style="margin: 20px 0;">
+            <h3>Samples (<span id="sample-count">0</span>)</h3>
+            <div id="sample-list" style="flex-grow: 1; overflow-y: auto; margin-bottom: 10px;">
+                <!-- Daftar sampel akan muncul di sini -->
+            </div>
+            <button id="btn-add-sample" class="control-btn">Add Sample</button>
+        </div>
+      </div>
+
+      <div class="main-content glass-panel" id="sample-editor-panel" style="display: none;">
+        <h3>Sample Editor: <span id="current-sample-name"></span></h3>
+        
+        <div class="editor-section">
+            <h4>1. Playback & Export</h4>
+            <div class="control-group">
+                <label for="test-pitch">Pitch</label>
+                <input type="number" id="test-pitch" min="0" max="127" value="60">
+                <label for="test-velocity">Velocity</label>
+                <input type="number" id="test-velocity" min="0" max="127" value="100">
+                <button id="btn-note-on" class="control-btn">Note On</button>
+                <button id="btn-note-off" class="control-btn">Note Off</button>
+                <button id="btn-extract-wav" class="control-btn">Extract to WAV</button>
+            </div>
+        </div>
+
+        <div class="editor-section">
+            <h4>2. Waveform & Loop Points</h4>
+            <div class="waveform-container">
+              <canvas id="waveform-canvas" class="waveform-canvas" width="1000" height="150"></canvas>
+              <!-- Overlay untuk info tambahan seperti posisi kursor akan ditambahkan oleh JS -->
+            </div>
+            <div class="control-grid">
+                <div class="control-group">
+                    <label for="sample-data-length">Data Length</label>
+                    <input type="text" id="sample-data-length" readonly>
+                </div>
+                <div class="control-group">
+                    <label for="sample-loop-start">Loop Start</label>
+                    <input type="number" id="sample-loop-start">
+                </div>
+                <div class="control-group">
+                    <label for="sample-loop-end">Loop End</label>
+                    <input type="number" id="sample-loop-end">
+                </div>
+            </div>
+            <div class="control-grid" style="margin-top: 10px;">
+                <button id="btn-edit-basic-properties" class="control-btn">Basic Properties</button>
+                <button id="btn-edit-envelope" class="control-btn">Envelope</button>
+                <button id="btn-edit-vibrato" class="control-btn">Vibrato/Tremolo</button>
+            </div>
+        </div>
+
+      </div>
+    </div>
+
+    <!-- Modal for Basic Properties -->
+    <div id="basic-properties-modal" class="modal-overlay" style="display: none;">
+        <div class="modal-content glass-panel">
+            <div class="modal-header">
+                <h3>Basic Properties</h3>
+                <button class="btn-close-modal control-btn">&times;</button>
+            </div>
+            <div class="modal-body">
+                <div class="editor-section">
+                    <h4>3. Basic Properties</h4>
+                    <div class="control-grid">
+                        <div class="control-group">
+                            <label for="sample-rate">Sample Rate</label>
+                            <input type="number" id="sample-rate" value="22050">
+                        </div>
+                        <div class="control-group">
+                            <label for="sample-panning">Panning (0-127)</label>
+                            <input type="number" id="sample-panning" min="0" max="127" value="64">
+                        </div>
+                        <div class="control-group">
+                            <label for="sample-low-freq">Low Freq</label>
+                            <input type="number" id="sample-low-freq" value="0">
+                        </div>
+                        <div class="control-group">
+                            <label for="sample-high-freq">High Freq</label>
+                            <input type="number" id="sample-high-freq" value="44100">
+                        </div>
+                        <div class="control-group">
+                            <label for="sample-root-freq">Root Freq</label>
+                            <input type="number" id="sample-root-freq" value="22050">
+                        </div>
+                    </div>
+                    <div class="control-group" style="margin-top: 15px;">
+                        <label><input type="checkbox" id="mode-looping"> Looping</label>
+                        <label><input type="checkbox" id="mode-sustain"> Sustain</label>
+                        <label><input type="checkbox" id="mode-envelope"> Envelope</label>
+                        <label><input type="checkbox" id="mode-16bit" checked> 16-bit</label>
+                        <label><input type="checkbox" id="mode-signed" checked> Signed</label>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Modal for Envelope -->
+    <div id="envelope-modal" class="modal-overlay" style="display: none;">
+        <div class="modal-content glass-panel">
+            <div class="modal-header">
+                <h3>Envelope Editor</h3>
+                <button class="btn-close-modal control-btn">&times;</button>
+            </div>
+            <div class="modal-body">
+                <div class="editor-section">
+                    <h4>4. Envelope</h4>
+                    <div class="envelope-editor">
+                        <!-- 6 poin envelope akan dibuat di sini oleh JS -->
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Modal for Vibrato/Tremolo -->
+    <div id="vibrato-modal" class="modal-overlay" style="display: none;">
+        <div class="modal-content glass-panel">
+            <div class="modal-header">
+                <h3>Vibrato & Tremolo</h3>
+                <button class="btn-close-modal control-btn">&times;</button>
+            </div>
+            <div class="modal-body">
+                <div class="editor-section">
+                    <h4>5. Vibrato & Tremolo</h4>
+                    <div class="control-grid">
+                        <div class="control-group">
+                            <label for="vib-sweep">Vibrato Sweep</label><input type="number" id="vib-sweep" min="0" max="255" value="0">
+                            <label for="vib-rate">Vibrato Rate</label><input type="number" id="vib-rate" min="0" max="255" value="0">
+                            <label for="vib-depth">Vibrato Depth</label><input type="number" id="vib-depth" min="0" max="255" value="0">
+                            <label for="trem-sweep">Tremolo Sweep</label><input type="number" id="trem-sweep" min="0" max="255" value="0">
+                            <label for="trem-rate">Tremolo Rate</label><input type="number" id="trem-rate" min="0" max="255" value="0">
+                            <label for="trem-depth">Tremolo Depth</label><input type="number" id="trem-depth" min="0" max="255" value="0">
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+  </div>
+
+  <!--
+    Kita akan membutuhkan file JavaScript baru untuk logika editor ini.
+    File ini akan mengimpor MidiSynth dari audio.js untuk fitur play sound.
+  -->
+  <script type="module" src="js/gus-editor-app.js"></script>
+</body>
+</html>

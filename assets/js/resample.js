@@ -83,9 +83,11 @@ function rs_loop(song, vp, count) {
     for (let j = 0; j < i; j++) {
       const idx = ofs >> FRACTION_BITS;
       const v1 = src[idx];
-      // Boundary check for safety, although loops should prevent this.
+      // CRITICAL FIX: Correctly determine the next sample for interpolation at the loop boundary.
+      // When the current sample `idx` is the last one before the loop wraps around,
+      // the next sample `v2` should be the one at the *start* of the loop.
       let v2;
-      if ((ofs + incr) < loop_end_fixed) { // Check against loop end
+      if (idx + 1 < (loop_end_fixed >> FRACTION_BITS)) {
         v2 = src[idx + 1];
       } else {
         v2 = src[loop_start_fixed >> FRACTION_BITS]; // Wrap around to loop start

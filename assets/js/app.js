@@ -29,6 +29,7 @@ export class PlanetMidi {
 
     // Instance #2: Khusus untuk "test sound" agar tidak ada konflik
     this.testSynth = new MidiSynth({
+      audioContext: options.audioContext, // Use the same shared context
       timidityCfg: options.timidityCfg,
       patchUrlBase: options.patchUrlBase,
       sampleRate: options.sampleRate,
@@ -427,12 +428,18 @@ export class PlanetMidi {
 
 // Initialize the player when the DOM is ready
 document.addEventListener('DOMContentLoaded', () => {
-  // Example of providing an external AudioContext:
-  // const myAudioContext = new (window.AudioContext || window.webkitAudioContext)();
-  // new PlanetMidi({ audioContext: myAudioContext, ... });
-  // new PlanetMidi({ sampleRate: 48000, bufferSize: 2048, ... });
-  // new PlanetMidi({ patchUrlBase: 'https://cdn.example.com/patches/', ... });
+  // CRITICAL FIX: Create a single, shared AudioContext for all synth instances.
+  // This prevents resource conflicts and audio glitches.
+  const sharedAudioContext = new (window.AudioContext || window.webkitAudioContext)({
+    sampleRate: 44100,
+  });
+
+  // The bufferSize is now a property of the ScriptProcessorNode, not the context itself.
+  // It will be passed to the MidiSynth constructor.
+  const bufferSize = 8192;
+
   new PlanetMidi({
+    audioContext: sharedAudioContext, // Pass the shared context
     uploadInputId: 'midi-upload',
     fileNameDisplayId: 'file-name',
     btnPlayId: 'btn-play',
@@ -442,8 +449,7 @@ document.addEventListener('DOMContentLoaded', () => {
     infoPanelId: 'info-panel',
     seekSliderId: 'seek-slider',
     btnTestId: 'btn-test',
-    sampleRate: 44100,
-    bufferSize: 8192,
+    bufferSize: bufferSize,
 
     timidityCfg: 'timidity.cfg',
     patchUrlBase: './projects/Rolan_1785063654/',

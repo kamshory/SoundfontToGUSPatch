@@ -432,6 +432,6 @@ document.addEventListener('DOMContentLoaded', () => {
     bufferSize: 8192,
 
     timidityCfg: 'timidity.cfg',
-    patchUrlBase: '././projects/Project_2_1785109247/',
+    patchUrlBase: './projects/Project_2_1785109247/',
   });
 });
