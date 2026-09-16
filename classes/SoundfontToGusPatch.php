@@ -98,8 +98,8 @@ class SoundfontToGusPatch
     }
 
     /**
-     * @param string $sourceFilePath
-     * @param string $outputDirectory
+     * @param string $sourceFilePath SF2 path file
+     * @param string $outputDirectory Output directory path
      * @throws \Exception
      */
     private function initialize($sourceFilePath, $outputDirectory)
@@ -115,6 +115,12 @@ class SoundfontToGusPatch
         if (!$this->fp) throw new \Exception("Failed to open SF2 file.");
     }
 
+    /**
+     * Read all RIFF chunks and populate internal arrays.
+     * 
+     * @throws Exception
+     * @return void
+     */
     private function parseRiffAndFindChunks()
     {
         $riffHeader = fread($this->fp, 12);
@@ -169,6 +175,12 @@ class SoundfontToGusPatch
         if ($this->smplOffset === 0) throw new \Exception("Chunk 'sdta' not found.");
     }
 
+    /**
+     * Parse pdta subchunks
+     * 
+     * @throws Exception
+     * @return void
+     */
     private function parsePdtaSubChunks()
     {
         $this->shdr_list = $this->parseStructArray($this->pdtaChunks['shdr'], 46);
@@ -180,8 +192,8 @@ class SoundfontToGusPatch
     }
 
     /**
-     * @param string $data
-     * @param int $struct_size
+     * @param string $data Data
+     * @param int $struct_size Struct size
      * @return array
      */
     private function parseStructArray($data, $struct_size)
@@ -192,10 +204,13 @@ class SoundfontToGusPatch
         }
         return $items;
     }
-
-    // ==================================================================
-    // MAIN LOOP
-    // ==================================================================
+    
+    /**
+     * Process presets and generate patches
+     * 
+     * @throws Exception
+     * @return void
+     */
     private function processPresetsAndGeneratePatches()
     {
         $toneDir = $this->outputDir . "/tone";
@@ -233,6 +248,10 @@ class SoundfontToGusPatch
     /**
      * Baca semua preset zone dari range pbag, kembalikan array:
      *   [ ['low'=>, 'high'=>, 'instId'=>, 'instName'=>], ... ]
+     * 
+     * @param mixed $pbagStart Pbag start offset
+     * @param mixed $pbagEnd Pbag end offset
+     * @return array
      */
     private function parsePresetZones($pbagStart, $pbagEnd)
     {
@@ -270,7 +289,10 @@ class SoundfontToGusPatch
     }
 
     /**
-     * Ambil semua sample (shdr entry) dari sebuah instrument.
+     * Get all samples (shdr entry) from an instrument
+     * 
+     * @param int $instId
+     * @return array
      */
     private function collectSamplesFromInstrument($instId)
     {
@@ -332,9 +354,15 @@ class SoundfontToGusPatch
         return $samples;
     }
 
-    // ==================================================================
-    // TONE: 1 preset -> 1 file, semua sample digabung
-    // ==================================================================
+    /**
+     * Write tone patch
+     * @param array $zones Zones    
+     * @param mixed $program Program
+     * @param mixed $bank Bank
+     * @param mixed $presetName Preset name
+     * @param mixed $toneDir Tone directory
+     * @return void
+     */
     private function writeTonePatch(array $zones, $program, $bank, $presetName, $toneDir)
     {
         // Kumpulkan semua sample dari seluruh zone (dedup)
@@ -376,9 +404,15 @@ class SoundfontToGusPatch
         $this->convertedCount++;
     }
 
-    // ==================================================================
-    // DRUM: 1 zone (note) -> 1 file
-    // ==================================================================
+    /**
+     * Write drum patch
+     * 
+     * @param array $zones Zones
+     * @param mixed $program Program
+     * @param mixed $presetName Preset name
+     * @param mixed $drumDir Drum directory
+     * @return void
+     */
     private function writeDrumPatches(array $zones, $program, $presetName, $drumDir)
     {
         // Dedup per note: zone pertama menang
@@ -423,20 +457,14 @@ class SoundfontToGusPatch
     }
 
     /**
-     * Hitung frekuensi root efektif untuk GUS wave header.
-     *
-     * Menggabungkan:
-     *  - byOriginalPitch + chPitchCorrection dari shdr
-     *  - coarseTune + fineTune (dari igen & pgen, sudah digabung pemanggil)
-     *  - scaleTuning (igen 56, default 100)
-     *  - overridingRootKey (igen 58, opsional)
-     *
-     * @param string $sampleData          46-byte shdr entry
-     * @param int    $coarseTune          semitones (igen + pgen)
-     * @param int    $fineTune            cents (igen + pgen)
-     * @param int    $scaleTuning         cents per key (default 100)
-     * @param int|null $overridingRootKey null jika tidak di-set
-     * @return float
+     * Calculate effective root frequency
+     * 
+     * @param string $sampleData Sample data (46 bytes)
+     * @param int $coarseTune Coarse tuning (semitones)
+     * @param int $fineTune Fine tuning (cents)
+     * @param int $scaleTuning Scale tuning (cents per key)
+     * @param int|null $overridingRootKey Overriding root key
+     * @return float|int
      */
     private function calculateEffectiveRootFreq(
         $sampleData,
@@ -457,34 +485,38 @@ class SoundfontToGusPatch
         // chPitchCorrection dalam cents (signed)
         $pitchCorr = unpack('c', substr($sampleData, 41, 1))[1];
 
-        // root_freq = frekuensi alami sample saat dimainkan tepat di rootKey.
-        // Ini mencakup:
-        //   - pitchCorr  : koreksi fine dari shdr (cents)
-        //   - coarseTune : offset semitone dari igen/pgen
-        //   - fineTune   : offset cents dari igen/pgen
+        // root_freq = natural frequency of sample when played at rootKey
+        // This includes:
+        //   - pitchCorr  : fine correction from shdr (cents)
+        //   - coarseTune : semitone offset from igen/pgen
+        //   - fineTune   : cents offset from igen/pgen
         //
-        // scaleTuning TIDAK dimasukkan ke sini. scaleTuning (igen 56) mengatur
-        // bagaimana player men-stretch pitch per key (default 100 cents/semitone).
-        // Player .pat standar (TiMidity++) sudah mengasumsikan 100 cents/semitone,
-        // sehingga memasukkan scaleTuning ke root_freq justru menyebabkan transpose.
+        // scaleTuning is NOT included here. scaleTuning (igen 56) sets how
+        // the player stretches pitch per key (default 100 cents/semitone).
+        // Standard .pat players (TiMidity++) already assume 100 cents/semitone,
+        // so including scaleTuning in root_freq would cause transposition.
+        
         $midiNote = $rootKey
                   + ($pitchCorr / 100.0)
                   + $coarseTune
                   + ($fineTune / 100.0);
 
-        // Konversi MIDI note ke Hz  (A4=69=440Hz)
+        // Correcting by 100 cents per semitone
         $freqHz = 440.0 * pow(2.0, ($midiNote - 69.0) / 12.0);
 
-        // Clamp ke rentang aman
+        // Clamp to safe range
         if ($freqHz < 8.0)     $freqHz = 8.0;
         if ($freqHz > 12544.0) $freqHz = 12544.0;
 
         return $freqHz;
     }
 
-    // ==================================================================
-    // Build .pat dari list sample shdr
-    // ==================================================================
+    /**
+     * Build patch file from samples
+     * 
+     * @param array $sampleChunks Samples (shdr entries)
+     * @return array<int|string|null> Array containing PAT file content and sample count
+     */
     private function buildPatFile(array $sampleChunks)
     {
         $patBody = '';
@@ -520,15 +552,14 @@ class SoundfontToGusPatch
             if ($pcmSamples <= 0 || $pcmSamples > 4 * 1024 * 1024) continue;
             $pcmLenBytes = $pcmSamples * 2;
 
-            // Ambil tuning dari array yang sudah dikumpulkan di collectSamplesFromInstrument
+            // Get array from chunk
             $coarseTune        = is_array($s_chunk) && isset($s_chunk['coarseTune'])        ? (int)$s_chunk['coarseTune']        : 0;
             $fineTune          = is_array($s_chunk) && isset($s_chunk['fineTune'])          ? (int)$s_chunk['fineTune']          : 0;
             $scaleTuning       = is_array($s_chunk) && isset($s_chunk['scaleTuning'])       ? (int)$s_chunk['scaleTuning']       : 100;
             $overridingRootKey = is_array($s_chunk) && isset($s_chunk['overridingRootKey']) ? $s_chunk['overridingRootKey']      : null;
 
-            // Hitung frekuensi root efektif.
-            // scaleTuning diteruskan hanya untuk referensi, tapi tidak dipakai
-            // dalam kalkulasi root_freq (lihat calculateEffectiveRootFreq).
+            // Calculate effective root frequency
+            // scaleTuning is not included in root_freq because Timidity++ will apply it automatically
             $rootFreqHz = $this->calculateEffectiveRootFreq(
                 $sampleData,
                 $coarseTune,
@@ -537,13 +568,9 @@ class SoundfontToGusPatch
                 $overridingRootKey
             );
 
-            // Sample rate = rate asli. Player akan pakai root_freq untuk pitch.
+            // Use original sample rate
             $sampleRate = (int)$s_rate;
             
-            //if ($sampleRate < 8000)  $sampleRate = 8000;
-            //if ($sampleRate > 48000) $sampleRate = 48000;
-            //error_log("Sample Rate ".$sampleRate);
-
             // ---- Loop validation ----
             $loopStartS = ($s_loopStart > $s_start) ? ($s_loopStart - $s_start) : 0;
             $loopEndS   = ($s_loopEnd   > $s_start) ? ($s_loopEnd   - $s_start) : 0;
@@ -610,9 +637,10 @@ class SoundfontToGusPatch
         return [$header . $patBody, $validSamplesCount];
     }
 
-    // ==================================================================
-    // WRITE timidity.cfg
-    // ==================================================================
+    /**
+     * Write timidity config
+     * @return void
+     */
     private function writeTimidityConfig()
     {
         $cfg  = "# Auto-generated mapping\n";
