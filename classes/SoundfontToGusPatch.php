@@ -137,23 +137,33 @@ class SoundfontToGusPatch
 
             if ($id === 'LIST') {
                 $type = fread($this->fp, 4);
-                $listContent = fread($this->fp, $size - 4);
-                $listContentStart = ftell($this->fp) - strlen($listContent);
+                $listContentStart = ftell($this->fp);
+                $listContentEnd   = $listContentStart + ($size - 4);
 
                 if ($type === 'sdta') {
-                    $offset = 0;
-                    while ($offset < strlen($listContent)) {
-                        if ($offset + 8 > strlen($listContent)) break;
-                        $subId   = substr($listContent, $offset, 4);
-                        $subSize = unpack('V', substr($listContent, $offset + 4, 4))[1];
+                    // Streaming: jangan baca isi LIST, cukup cari subchunk 'smpl'
+                    $cursor = $listContentStart;
+                    while ($cursor + 8 <= $listContentEnd) {
+                        fseek($this->fp, $cursor, SEEK_SET);
+                        $subHeader = fread($this->fp, 8);
+                        if (strlen($subHeader) < 8) break;
+
+                        $subId   = substr($subHeader, 0, 4);
+                        $subSize = unpack('V', substr($subHeader, 4, 4))[1];
+
                         if ($subId === 'smpl') {
-                            $this->smplOffset = $listContentStart + $offset + 8;
+                            $this->smplOffset = $cursor + 8;
                             break;
                         }
-                        $offset += 8 + $subSize;
-                        if ($subSize % 2 !== 0) $offset++;
+                        $cursor += 8 + $subSize;
+                        if ($subSize % 2 !== 0) $cursor++;
                     }
+                    // Lompat ke akhir LIST
+                    fseek($this->fp, $listContentEnd, SEEK_SET);
+
                 } elseif ($type === 'pdta') {
+                    // pdta kecil (< 1 MB), aman dibaca penuh
+                    $listContent = fread($this->fp, $size - 4);
                     $offset = 0;
                     while ($offset < strlen($listContent)) {
                         $subId   = substr($listContent, $offset, 4);
@@ -162,10 +172,16 @@ class SoundfontToGusPatch
                         $offset += 8 + $subSize;
                         if ($subSize % 2 !== 0) $offset++;
                     }
+
+                } else {
+                    // LIST lain — skip
+                    fseek($this->fp, $listContentEnd, SEEK_SET);
                 }
+
             } else {
                 fseek($this->fp, $size, SEEK_CUR);
             }
+
             if ($size % 2 !== 0) fseek($this->fp, 1, SEEK_CUR);
         }
 
@@ -365,7 +381,6 @@ class SoundfontToGusPatch
      */
     private function writeTonePatch(array $zones, $program, $bank, $presetName, $toneDir)
     {
-        // Kumpulkan semua sample dari seluruh zone (dedup)
         $allSamples = [];
         $seen = [];
         foreach ($zones as $zone) {
@@ -379,15 +394,16 @@ class SoundfontToGusPatch
         }
         if (empty($allSamples)) return;
 
-        list($patContent, $sampleCount) = $this->buildPatFile($allSamples);
-        if ($patContent === null) return;
-
         $formattedMidiNum = sprintf("%03d", $program);
         $cleanName = preg_replace('/[^a-zA-Z0-9_\-]/', '_', $presetName);
         $outFileName = "{$formattedMidiNum}_" . strtolower($cleanName) . '.pat';
         $outPath = $toneDir . '/' . $outFileName;
 
-        file_put_contents($outPath, $patContent);
+        $sampleCount = $this->buildPatFileStreaming($allSamples, $outPath);
+        if ($sampleCount === 0) {
+            @unlink($outPath);
+            return;
+        }
 
         $this->timidityMap['tone'][$program][] = "tone/{$outFileName}";
 
@@ -404,6 +420,140 @@ class SoundfontToGusPatch
         $this->convertedCount++;
     }
 
+    private function buildPatFileStreaming(array $sampleChunks, $outPath)
+    {
+        $out = fopen($outPath, 'wb');
+        if (!$out) {
+            throw new \Exception("Cannot open output file: {$outPath}");
+        }
+
+        // ---- Tulis instrument header 239 byte (sample count = placeholder) ----
+        $header  = "GF1PATCH110\0";
+        $header .= str_pad("ID#000002\0", 10, "\0");
+        $header .= str_pad("PHP SF2->PAT", 60, "\0");
+        $header .= str_repeat("\0", 116);
+        $header .= pack('C', 0);        // placeholder sample count di offset 198
+        $header .= str_repeat("\0", 40);
+        fwrite($out, $header);
+
+        $validSamplesCount = 0;
+        $blockSize = 1024 * 1024;       // baca PCM per 1 MB
+
+        foreach ($sampleChunks as $s_chunk) {
+            // ---- Parsing shdr ----
+            if (is_array($s_chunk)) {
+                $sampleData = $s_chunk['data'];
+            } else {
+                $sampleData = $s_chunk;
+            }
+            if (strlen($sampleData) < 46) continue;
+
+            $s_name      = rtrim(substr($sampleData, 0, 20), "\0");
+            $s_start     = unpack('V', substr($sampleData, 20, 4))[1];
+            $s_end       = unpack('V', substr($sampleData, 24, 4))[1];
+            $s_loopStart = unpack('V', substr($sampleData, 28, 4))[1];
+            $s_loopEnd   = unpack('V', substr($sampleData, 32, 4))[1];
+            $s_rate      = unpack('V', substr($sampleData, 36, 4))[1];
+            $s_type      = unpack('v', substr($sampleData, 44, 2))[1];
+
+            if (($s_type & 0x7FFF) !== 1) continue;
+
+            $pcmSamples = $s_end - $s_start;
+            if ($pcmSamples <= 0 || $pcmSamples > 200 * 1024 * 1024) continue; // naikkan batas ke 200 M sample
+            $pcmLenBytes = $pcmSamples * 2;
+
+            // ---- Tuning ----
+            $coarseTune        = is_array($s_chunk) && isset($s_chunk['coarseTune'])        ? (int)$s_chunk['coarseTune']        : 0;
+            $fineTune          = is_array($s_chunk) && isset($s_chunk['fineTune'])          ? (int)$s_chunk['fineTune']          : 0;
+            $scaleTuning       = is_array($s_chunk) && isset($s_chunk['scaleTuning'])       ? (int)$s_chunk['scaleTuning']       : 100;
+            $overridingRootKey = is_array($s_chunk) && isset($s_chunk['overridingRootKey']) ? $s_chunk['overridingRootKey']      : null;
+
+            $rootFreqHz = $this->calculateEffectiveRootFreq(
+                $sampleData,
+                $coarseTune,
+                $fineTune,
+                $scaleTuning,
+                $overridingRootKey
+            );
+
+            // ---- Sample rate ----
+            $sampleRate = (int)$s_rate;
+
+            // ---- Loop ----
+            $loopStartS = ($s_loopStart > $s_start) ? ($s_loopStart - $s_start) : 0;
+            $loopEndS   = ($s_loopEnd   > $s_start) ? ($s_loopEnd   - $s_start) : 0;
+            if ($loopEndS > $pcmSamples) $loopEndS = $pcmSamples;
+
+            $hasLoop = ($loopEndS - $loopStartS) >= 8;
+
+            if ($hasLoop) {
+                $loopStartByte = $loopStartS * 2;
+                $loopEndByte   = $loopEndS * 2;
+                $modes = 0x01 | 0x04;
+            } else {
+                $loopStartByte = 0;
+                $loopEndByte   = 0;
+                $modes = 0x01;
+            }
+
+            // ---- Bangun wave header 96 byte di memory (kecil) ----
+            $waveHeader  = str_pad(substr($s_name, 0, 7), 7, "\0");
+            $waveHeader .= pack('C', 0);
+            $waveHeader .= pack('V', $pcmLenBytes);
+            $waveHeader .= pack('V', $loopStartByte);
+            $waveHeader .= pack('V', $loopEndByte);
+            $waveHeader .= pack('v', $sampleRate);
+            $waveHeader .= pack('V', 8);
+            $waveHeader .= pack('V', 12544);
+            $waveHeader .= pack('V', (int)round($rootFreqHz * 1024));  // fixed-point 10.22 (sesuai konvensi Anda)
+            $waveHeader .= pack('v', 0);
+            $waveHeader .= pack('C', 8);
+            $waveHeader .= pack('CCCCCC', 63, 63, 63, 63, 63, 63);
+            $waveHeader .= pack('CCCCCC', 0, 0, 0, 0, 0, 0);
+            $waveHeader .= str_repeat("\0", 6);
+            $waveHeader .= pack('C', $modes);
+            $waveHeader .= str_repeat("\0", 40);
+
+            if (strlen($waveHeader) !== 96) continue;
+
+            fwrite($out, $waveHeader);
+
+            // ---- Streaming PCM per blok ----
+            $seekPos = $this->smplOffset + ($s_start * 2);
+            if (fseek($this->fp, $seekPos, SEEK_SET) !== 0) continue;
+
+            $remaining = $pcmLenBytes;
+            $pcmOk = true;
+            while ($remaining > 0) {
+                $read = ($remaining > $blockSize) ? $blockSize : $remaining;
+                $buf = fread($this->fp, $read);
+                if ($buf === false || strlen($buf) === 0) {
+                    $pcmOk = false;
+                    break;
+                }
+                fwrite($out, $buf);
+                $remaining -= strlen($buf);
+            }
+
+            if (!$pcmOk) {
+                // Baca PCM gagal di tengah jalan — kita tidak bisa rollback file,
+                // jadi stop dan biarkan pemanggil tahu lewat sample count yang lebih kecil.
+                break;
+            }
+
+            $validSamplesCount++;
+        }
+
+        // ---- Rewrite sample count di offset 198 ----
+        if ($validSamplesCount > 255) $validSamplesCount = 255;
+        if (fseek($out, 198, SEEK_SET) === 0) {
+            fwrite($out, pack('C', $validSamplesCount));
+        }
+        fclose($out);
+
+        return $validSamplesCount;
+    }
+
     /**
      * Write drum patch
      * 
@@ -415,29 +565,26 @@ class SoundfontToGusPatch
      */
     private function writeDrumPatches(array $zones, $program, $presetName, $drumDir)
     {
-        // Dedup per note: zone pertama menang
         $usedNotes = [];
 
         foreach ($zones as $zone) {
-            $note = $zone['low'];  // drum zone biasanya single-note
-
+            $note = $zone['low'];
             if (isset($usedNotes[$note])) continue;
 
             $samples = $this->collectSamplesFromInstrument($zone['instId']);
             if (empty($samples)) continue;
 
-            list($patContent, $sampleCount) = $this->buildPatFile($samples);
-            if ($patContent === null) continue;
-
-            // Nama file pakai instrument name, fallback ke preset name
             $nameForFile = $zone['instName'] !== '' ? $zone['instName'] : $presetName;
             $cleanName = preg_replace('/[^a-zA-Z0-9_\-]/', '_', $nameForFile);
             $outFileName = sprintf("%03d_", $note) . strtolower($cleanName) . '.pat';
             $outPath = $drumDir . '/' . $outFileName;
 
-            file_put_contents($outPath, $patContent);
+            $sampleCount = $this->buildPatFileStreaming($samples, $outPath);
+            if ($sampleCount === 0) {
+                @unlink($outPath);
+                continue;
+            }
 
-            // Map: drumset[program][note] = path
             $this->timidityMap['drum'][$program][$note] = "drum/{$outFileName}";
 
             if ($this->db && $this->projectId) {
@@ -509,132 +656,6 @@ class SoundfontToGusPatch
         if ($freqHz > 12544.0) $freqHz = 12544.0;
 
         return $freqHz;
-    }
-
-    /**
-     * Build patch file from samples
-     * 
-     * @param array $sampleChunks Samples (shdr entries)
-     * @return array<int|string|null> Array containing PAT file content and sample count
-     */
-    private function buildPatFile(array $sampleChunks)
-    {
-        $patBody = '';
-        $waveHeader = '';
-        $validSamplesCount = 0;
-
-        foreach ($sampleChunks as $s_chunk) {
-            // Support both plain string and array with 'data'/'tuneCents'
-            if (is_array($s_chunk)) {
-                $sampleData = $s_chunk['data'];
-                $tuneCents = isset($s_chunk['tuneCents']) ? $s_chunk['tuneCents'] : 0;
-            } else {
-                $sampleData = $s_chunk;
-                $tuneCents = 0;
-            }
-
-            if (strlen($sampleData) < 46) continue;
-
-            $s_name      = rtrim(substr($sampleData, 0, 20), "\0");
-            $s_start     = unpack('V', substr($sampleData, 20, 4))[1];
-            $s_end       = unpack('V', substr($sampleData, 24, 4))[1];
-            $s_loopStart = unpack('V', substr($sampleData, 28, 4))[1];
-            $s_loopEnd   = unpack('V', substr($sampleData, 32, 4))[1];
-            $s_rate      = unpack('V', substr($sampleData, 36, 4))[1];
-            $s_pitch     = ord(substr($sampleData, 40, 1));
-            $s_pitchCorr = unpack('c', substr($sampleData, 41, 1))[1];
-            $s_type      = unpack('v', substr($sampleData, 44, 2))[1];
-
-            // Only mono samples (type 1)
-            if (($s_type & 0x7FFF) !== 1) continue;
-
-            $pcmSamples = $s_end - $s_start;
-            if ($pcmSamples <= 0 || $pcmSamples > 4 * 1024 * 1024) continue;
-            $pcmLenBytes = $pcmSamples * 2;
-
-            // Get array from chunk
-            $coarseTune        = is_array($s_chunk) && isset($s_chunk['coarseTune'])        ? (int)$s_chunk['coarseTune']        : 0;
-            $fineTune          = is_array($s_chunk) && isset($s_chunk['fineTune'])          ? (int)$s_chunk['fineTune']          : 0;
-            $scaleTuning       = is_array($s_chunk) && isset($s_chunk['scaleTuning'])       ? (int)$s_chunk['scaleTuning']       : 100;
-            $overridingRootKey = is_array($s_chunk) && isset($s_chunk['overridingRootKey']) ? $s_chunk['overridingRootKey']      : null;
-
-            // Calculate effective root frequency
-            // scaleTuning is not included in root_freq because Timidity++ will apply it automatically
-            $rootFreqHz = $this->calculateEffectiveRootFreq(
-                $sampleData,
-                $coarseTune,
-                $fineTune,
-                $scaleTuning,
-                $overridingRootKey
-            );
-
-            // Use original sample rate
-            $sampleRate = (int)$s_rate;
-            
-            // ---- Loop validation ----
-            $loopStartS = ($s_loopStart > $s_start) ? ($s_loopStart - $s_start) : 0;
-            $loopEndS   = ($s_loopEnd   > $s_start) ? ($s_loopEnd   - $s_start) : 0;
-            if ($loopEndS > $pcmSamples) $loopEndS = $pcmSamples;
-
-            $hasLoop = ($loopEndS - $loopStartS) >= 8;
-
-            if ($hasLoop) {
-                $loopStartByte = $loopStartS * 2;
-                $loopEndByte   = $loopEndS * 2;
-                $modes = 0x01 | 0x04; // 16-bit + looping
-            } else {
-                $loopStartByte = 0;
-                $loopEndByte   = 0;
-                $modes = 0x01;
-            }
-
-            // ---- Read PCM ----
-            if (fseek($this->fp, $this->smplOffset + ($s_start * 2), SEEK_SET) !== 0) continue;
-            $rawPcm = fread($this->fp, $pcmLenBytes);
-            if (strlen($rawPcm) !== $pcmLenBytes) continue;
-
-            $currentPcm = '';
-            for ($j = 0; $j < $pcmSamples; $j++) {
-                $sample = unpack('v', substr($rawPcm, $j * 2, 2))[1];
-                if ($sample >= 0x8000) $sample -= 0x10000;
-                $currentPcm .= pack('v', $sample);
-            }
-
-            // ---- Wave header (96 bytes) ----
-            $waveHeader  = str_pad(substr($s_name, 0, 7), 7, "\0");
-            $waveHeader .= pack('C', 0);
-            $waveHeader .= pack('V', $pcmLenBytes);
-            $waveHeader .= pack('V', $loopStartByte);
-            $waveHeader .= pack('V', $loopEndByte);
-            $waveHeader .= pack('v', $sampleRate);
-            $waveHeader .= pack('V', 8);                               // low freq (Hz)
-            $waveHeader .= pack('V', 12544);                           // high freq (Hz)
-            $waveHeader .= pack('V', (int)round($rootFreqHz * 1024));  // root freq (Hz × 1024 fixed-point)
-            $waveHeader .= pack('v', 0);                               // finetune (unused)
-            $waveHeader .= pack('C', 8);                               // panning centre
-            $waveHeader .= pack('CCCCCC', 63, 63, 63, 63, 63, 63);
-            $waveHeader .= pack('CCCCCC', 0, 0, 0, 0, 0, 0);
-            $waveHeader .= str_repeat("\0", 6);
-            $waveHeader .= pack('C', $modes);
-            $waveHeader .= str_repeat("\0", 40);
-
-            if (strlen($waveHeader) !== 96) continue;
-
-            $patBody .= $waveHeader . $currentPcm;
-            $validSamplesCount++;
-        }
-
-        if ($validSamplesCount === 0) return [null, 0];
-
-        // Patch header 239 bytes
-        $header  = "GF1PATCH110\0";
-        $header .= str_pad("ID#000002\0", 10, "\0");
-        $header .= str_pad("PHP SF2->PAT", 60, "\0");
-        $header .= str_repeat("\0", 116);
-        $header .= pack('C', $validSamplesCount);
-        $header .= str_repeat("\0", 40);
-
-        return [$header . $patBody, $validSamplesCount];
     }
 
     /**
