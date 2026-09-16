@@ -290,25 +290,30 @@ class SoundfontToGusPatch
                 ? unpack('v', substr($this->pdtaChunks['ibag'], $nextOffset, 2))[1]
                 : (int)(strlen($this->pdtaChunks['igen']) / 4);
 
-            $keyLow = 0;
-            $keyHigh = 127;
+            $coarseTune = 0;
+            $fineTune = 0;
+            $sampleId = null;
+
             for ($l = $igenStart; $l < $igenEnd; $l++) {
                 $igenId = unpack('v', substr($this->pdtaChunks['igen'], $l * 4, 2))[1];
-                if ($igenId == 43) {
-                    $keyLow = ord(substr($this->pdtaChunks['igen'], $l * 4 + 2, 1));
-                    $keyHigh = ord(substr($this->pdtaChunks['igen'], $l * 4 + 3, 1));
+                $amount = unpack('s', substr($this->pdtaChunks['igen'], $l * 4 + 2, 2))[1];
+
+                if ($igenId == 51) {        // coarseTune (semitones)
+                    $coarseTune = $amount;
+                } elseif ($igenId == 52) {  // fineTune (cents)
+                    $fineTune = $amount;
+                } elseif ($igenId == 53) {  // sampleID
+                    $sampleId = $amount;
                 }
-                if ($igenId == 53) {
-                    $sampleId = unpack('v', substr($this->pdtaChunks['igen'], $l * 4 + 2, 2))[1];
-                    if (isset($this->shdr_list[$sampleId]) && !isset($seen[$sampleId])) {
-                        $seen[$sampleId] = true;
-                        $samples[] = [
-                            'data' => $this->shdr_list[$sampleId],
-                            'keyLow' => $keyLow,
-                            'keyHigh' => $keyHigh,
-                        ];
-                    }
-                }
+            }
+
+            if ($sampleId !== null && isset($this->shdr_list[$sampleId]) && !isset($seen[$sampleId])) {
+                $seen[$sampleId] = true;
+                $totalTuneCents = $coarseTune * 100 + $fineTune;
+                $samples[] = [
+                    'data' => $this->shdr_list[$sampleId],
+                    'tuneCents' => $totalTuneCents
+                ];
             }
         }
         return $samples;
@@ -412,113 +417,77 @@ class SoundfontToGusPatch
     {
         $patBody = '';
         $validSamplesCount = 0;
-        $preparedSamples = [];
 
         foreach ($sampleChunks as $s_chunk) {
-            $sampleData = is_array($s_chunk) ? $s_chunk['data'] : $s_chunk;
+            // Support both plain string and array with 'data'/'tuneCents'
+            if (is_array($s_chunk)) {
+                $sampleData = $s_chunk['data'];
+                $tuneCents = isset($s_chunk['tuneCents']) ? $s_chunk['tuneCents'] : 0;
+            } else {
+                $sampleData = $s_chunk;
+                $tuneCents = 0;
+            }
+
             if (strlen($sampleData) < 46) continue;
 
-            $s_type = unpack('v', substr($sampleData, 44, 2))[1];
-            if (($s_type & 0x7FFF) !== 1) continue;
+            $s_name      = rtrim(substr($sampleData, 0, 20), "\0");
+            $s_start     = unpack('V', substr($sampleData, 20, 4))[1];
+            $s_end       = unpack('V', substr($sampleData, 24, 4))[1];
+            $s_loopStart = unpack('V', substr($sampleData, 28, 4))[1];
+            $s_loopEnd   = unpack('V', substr($sampleData, 32, 4))[1];
+            $s_rate      = unpack('V', substr($sampleData, 36, 4))[1];
+            $s_pitch     = ord(substr($sampleData, 40, 1));
+            $s_pitchCorr = unpack('c', substr($sampleData, 41, 1))[1];
+            $s_type      = unpack('v', substr($sampleData, 44, 2))[1];
 
-            $pitch = ord(substr($sampleData, 40, 1));
-            if ($pitch > 127) $pitch = 60;
-            $pitchCorrection = unpack('c', substr($sampleData, 41, 1))[1];
-            $rootFreqHz = 440 * pow(
-                2,
-                (($pitch - 69) / 12) + ($pitchCorrection / 1200)
-            );
-
-            $preparedSamples[] = [
-                'chunk' => $s_chunk,
-                'rootHz' => $rootFreqHz,
-                'keyLow' => is_array($s_chunk) ? $s_chunk['keyLow'] : null,
-                'keyHigh' => is_array($s_chunk) ? $s_chunk['keyHigh'] : null,
-            ];
-        }
-
-        usort($preparedSamples, function ($left, $right) {
-            return $left['rootHz'] <=> $right['rootHz'];
-        });
-
-        $sampleCount = count($preparedSamples);
-
-        foreach ($preparedSamples as $sampleIndex => $preparedSample) {
-            $s_chunk = $preparedSample['chunk'];
-            $s_chunk = is_array($s_chunk) ? $s_chunk['data'] : $s_chunk;
-
-            $s_name      = rtrim(substr($s_chunk, 0, 20), "\0");
-            $s_start     = unpack('V', substr($s_chunk, 20, 4))[1];
-            $s_end       = unpack('V', substr($s_chunk, 24, 4))[1];
-            $s_loopStart = unpack('V', substr($s_chunk, 28, 4))[1];
-            $s_loopEnd   = unpack('V', substr($s_chunk, 32, 4))[1];
-            $s_rate      = unpack('V', substr($s_chunk, 36, 4))[1];
-            $s_type      = unpack('v', substr($s_chunk, 44, 2))[1];
-
-            // Only use mono samples. Stereo-linked SF2 samples need channel
-            // pairing and cannot be represented by one GUS waveform.
+            // Only mono samples (type 1)
             if (($s_type & 0x7FFF) !== 1) continue;
 
             $pcmSamples = $s_end - $s_start;
             if ($pcmSamples <= 0 || $pcmSamples > 4 * 1024 * 1024) continue;
             $pcmLenBytes = $pcmSamples * 2;
 
-            $rootFreqHz = (int)round($preparedSample['rootHz']);
-            $rootFrequency = max(1, min(0xFFFFFFFF, $rootFreqHz * 256));
+            // ---- Root frequency with tuning offset ----
+            $pitch = (int)$s_pitch;
+            if ($pitch < 0 || $pitch > 127) $pitch = 60; // fallback C4
 
-            if ($preparedSample['keyLow'] !== null && $preparedSample['keyHigh'] !== null) {
-                $lowFreqHz = 440 * pow(2, ($preparedSample['keyLow'] - 69) / 12);
-                $highFreqHz = 440 * pow(2, ($preparedSample['keyHigh'] - 69) / 12);
-            } elseif ($sampleCount === 1) {
-                $lowFreqHz = 8;
-                $highFreqHz = 12544;
-            } else {
-                $previousRootHz = $sampleIndex > 0
-                    ? $preparedSamples[$sampleIndex - 1]['rootHz']
-                    : 8;
-                $nextRootHz = $sampleIndex + 1 < $sampleCount
-                    ? $preparedSamples[$sampleIndex + 1]['rootHz']
-                    : 12544;
-                $lowFreqHz = sqrt($previousRootHz * $preparedSample['rootHz']);
-                $highFreqHz = sqrt($preparedSample['rootHz'] * $nextRootHz);
-                $lowFreqHz = max(8, min(12544, $lowFreqHz));
-                $highFreqHz = max($lowFreqHz, min(12544, $highFreqHz));
-            }
+            $midiNoteWithCents = $pitch + ($s_pitchCorr / 100.0);
+            $naturalFreqHz = 440 * pow(2, ($midiNoteWithCents - 69) / 12);
 
-            $lowFrequency = (int)round($lowFreqHz * 256);
-            $highFrequency = (int)round($highFreqHz * 256);
+            // Apply tuning offset: if the instrument wants a higher pitch,
+            // we must lower the root frequency so the player speeds up the sample.
+            // Δ semitones = tuneCents / 100;  ratio = 2^(-Δ/12) = 2^(-tuneCents/1200)
+            $rootFreqHz = $naturalFreqHz * pow(2, -$tuneCents / 1200);
 
+            if ($rootFreqHz < 1)    $rootFreqHz = 1;
+            if ($rootFreqHz > 12544) $rootFreqHz = 12544;
+
+            // ---- Sample rate: original, no normalisation ----
             $sampleRate = (int)$s_rate;
             if ($sampleRate < 1 || $sampleRate > 65535) $sampleRate = 44100;
 
+            // ---- Loop validation ----
             $loopStartS = ($s_loopStart > $s_start) ? ($s_loopStart - $s_start) : 0;
             $loopEndS   = ($s_loopEnd   > $s_start) ? ($s_loopEnd   - $s_start) : 0;
+            if ($loopEndS > $pcmSamples) $loopEndS = $pcmSamples;
 
-            // GUS loop offsets are byte offsets, while SF2 offsets are sample
-            // indexes. Reject malformed points instead of letting the player
-            // wrap outside the waveform buffer.
-            $hasLoop = $loopStartS >= 0
-                && $loopStartS < $pcmSamples - 1
-                && $loopEndS > $loopStartS
-                && $loopEndS <= $pcmSamples
-                && ($loopEndS - $loopStartS) >= 8;
+            $hasLoop = ($loopEndS - $loopStartS) >= 8;
 
             if ($hasLoop) {
                 $loopStartByte = $loopStartS * 2;
                 $loopEndByte   = $loopEndS * 2;
-                $modes = 0x01 | 0x04 | 0x20; // 16-bit + looping + sustain
+                $modes = 0x01 | 0x04; // 16-bit + looping
             } else {
                 $loopStartByte = 0;
                 $loopEndByte   = 0;
-                $modes = 0x01; // 16-bit signed, no loop
+                $modes = 0x01;
             }
 
+            // ---- Read PCM ----
             if (fseek($this->fp, $this->smplOffset + ($s_start * 2), SEEK_SET) !== 0) continue;
             $rawPcm = fread($this->fp, $pcmLenBytes);
             if (strlen($rawPcm) !== $pcmLenBytes) continue;
 
-            // SF2 PCM is signed 16-bit little-endian, the GUS format uses the
-            // same representation. Repack explicitly for host portability.
             $currentPcm = '';
             for ($j = 0; $j < $pcmSamples; $j++) {
                 $sample = unpack('v', substr($rawPcm, $j * 2, 2))[1];
@@ -526,18 +495,18 @@ class SoundfontToGusPatch
                 $currentPcm .= pack('v', $sample);
             }
 
-            // GUS waveform header: exactly 96 bytes.
+            // ---- Wave header (96 bytes) ----
             $waveHeader  = str_pad(substr($s_name, 0, 7), 7, "\0");
             $waveHeader .= pack('C', 0);
             $waveHeader .= pack('V', $pcmLenBytes);
             $waveHeader .= pack('V', $loopStartByte);
             $waveHeader .= pack('V', $loopEndByte);
             $waveHeader .= pack('v', $sampleRate);
-            $waveHeader .= pack('V', $lowFrequency);
-            $waveHeader .= pack('V', $highFrequency);
-            $waveHeader .= pack('V', $rootFrequency);
-            $waveHeader .= pack('v', 0);
-            $waveHeader .= pack('C', 8);
+            $waveHeader .= pack('V', 8);                       // low freq (Hz)
+            $waveHeader .= pack('V', 12544);                   // high freq (Hz)
+            $waveHeader .= pack('V', (int)round($rootFreqHz * 256)); // root freq (Hz)
+            $waveHeader .= pack('v', 0);                       // finetune (unused)
+            $waveHeader .= pack('C', 8);                       // panning centre
             $waveHeader .= pack('CCCCCC', 63, 63, 63, 63, 63, 63);
             $waveHeader .= pack('CCCCCC', 0, 0, 0, 0, 0, 0);
             $waveHeader .= str_repeat("\0", 6);
@@ -552,16 +521,13 @@ class SoundfontToGusPatch
 
         if ($validSamplesCount === 0) return [null, 0];
 
-        if ($validSamplesCount > 255) $validSamplesCount = 255;
-
-        // The local TiMidity patch reader uses the GUS 239-byte header and
-        // reads the waveform count from byte 198.
-        $header  = "GF1PATCH110\0";                              // 0-11
-        $header .= str_pad("ID#000002\0", 10, "\0");             // 12-21
-        $header .= str_pad("PHP SF2->PAT", 60, "\0");            // 22-81
-        $header .= str_repeat("\0", 116);                        // 82-197
-        $header .= pack('C', $validSamplesCount);                // 198: sample count
-        $header .= str_repeat("\0", 40);                         // 199-238
+        // Patch header 239 bytes
+        $header  = "GF1PATCH110\0";
+        $header .= str_pad("ID#000002\0", 10, "\0");
+        $header .= str_pad("PHP SF2->PAT", 60, "\0");
+        $header .= str_repeat("\0", 116);
+        $header .= pack('C', $validSamplesCount);
+        $header .= str_repeat("\0", 40);
 
         return [$header . $patBody, $validSamplesCount];
     }
