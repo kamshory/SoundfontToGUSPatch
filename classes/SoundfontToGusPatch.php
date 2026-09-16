@@ -7,7 +7,7 @@
  * files and a timidity.cfg configuration file.
  *
  * @version 1.0
- * @author Gemini Code Assist
+ * @author Kamshory
  */
 class SoundfontToGusPatch
 {
@@ -45,13 +45,13 @@ class SoundfontToGusPatch
      * @param string $outputDirectory Path to the output directory.
      * @throws \Exception If an error occurs during the conversion process.
      */
-    public function convert($sourceFilePath, $outputDirectory)
+    public function convert($sourceFilePath, $outputDirectory, $suffix = '')
     {
         $this->initialize($sourceFilePath, $outputDirectory);
         try {
             $this->parseRiffAndFindChunks();
             $this->parsePdtaSubChunks();
-            $this->processPresetsAndGeneratePatches();
+            $this->processPresetsAndGeneratePatches($suffix);
             $this->writeTimidityConfig();
             $this->log("\nDone! Successfully converted {$this->convertedCount} .pat files.");
         } finally {
@@ -231,7 +231,7 @@ class SoundfontToGusPatch
      * @throws Exception
      * @return void
      */
-    private function processPresetsAndGeneratePatches()
+    private function processPresetsAndGeneratePatches($suffix = '')
     {
         $toneDir = $this->outputDir . "/tone";
         $drumDir = $this->outputDir . "/drum";
@@ -258,9 +258,9 @@ class SoundfontToGusPatch
             if (empty($zones)) continue;
 
             if ($isDrum) {
-                $this->writeDrumPatches($zones, $program, $presetName, $drumDir);
+                $this->writeDrumPatches($zones, $program, $presetName, $drumDir, $suffix);
             } else {
-                $this->writeTonePatch($zones, $program, $bank, $presetName, $toneDir);
+                $this->writeTonePatch($zones, $program, $bank, $presetName, $toneDir, $suffix);
             }
         }
     }
@@ -382,9 +382,10 @@ class SoundfontToGusPatch
      * @param mixed $bank Bank
      * @param mixed $presetName Preset name
      * @param mixed $toneDir Tone directory
+     * @param string $suffix Suffix file name to prevent browser cache it
      * @return void
      */
-    private function writeTonePatch($zones, $program, $bank, $presetName, $toneDir)
+    private function writeTonePatch($zones, $program, $bank, $presetName, $toneDir, $suffix = '')
     {
         $allSamples = [];
         $seen = [];
@@ -400,7 +401,9 @@ class SoundfontToGusPatch
         if (empty($allSamples)) return;
 
         $formattedMidiNum = sprintf("%03d", $program);
-        $cleanName = preg_replace('/[^a-zA-Z0-9_\-]/', '_', $presetName);
+        $presetName = $this->fixName($presetName, $formattedMidiNum, false);
+        $cleanName = $this->sanitizeName($presetName) . $suffix;
+        
         $outFileName = "{$formattedMidiNum}_" . strtolower($cleanName) . '.pat';
         $outPath = $toneDir . '/' . $outFileName;
 
@@ -423,6 +426,57 @@ class SoundfontToGusPatch
         $this->log(sprintf("Bank %3d | [TONE] | Prog %03d: %s (%d samples)",
             $bank, $program, $outFileName, $sampleCount));
         $this->convertedCount++;
+    }
+
+    /**
+     * Write drum patch
+     * 
+     * @param array $zones Zones
+     * @param mixed $program Program
+     * @param mixed $presetName Preset name
+     * @param mixed $drumDir Drum directory
+     * @param string $suffix Suffix file name to prevent browser cache it
+     * @return void
+     */
+    private function writeDrumPatches($zones, $program, $presetName, $drumDir, $suffix = '')
+    {
+        $usedNotes = [];
+
+        foreach ($zones as $zone) {
+            $note = $zone['low'];
+            if (isset($usedNotes[$note])) continue;
+
+            $samples = $this->collectSamplesFromInstrument($zone['instId']);
+            if (empty($samples)) continue;
+
+            $nameForFile = $zone['instName'] !== '' ? $zone['instName'] : $presetName;
+            $nameForFile = $this->fixName($nameForFile, $note, true);
+            $cleanName = $this->sanitizeName($nameForFile) . $suffix;
+            $outFileName = sprintf("%03d_", $note) . strtolower($cleanName) . '.pat';
+            $outPath = $drumDir . '/' . $outFileName;
+
+            $sampleCount = $this->buildPatFileStreaming($samples, $outPath);
+            if ($sampleCount === 0) {
+                @unlink($outPath);
+                continue;
+            }
+
+            $this->timidityMap['drum'][$program][$note] = "drum/{$outFileName}";
+
+            if ($this->db && $this->projectId) {
+                $this->db->addPatchToProject(
+                    $this->projectId,
+                    "drum/{$outFileName}",
+                    'drum', $note, 128, $nameForFile
+                );
+            }
+
+            $this->log(sprintf("Bank 128 | [DRUM] | Note %3d: %s (%d samples)",
+                $note, $outFileName, $sampleCount));
+
+            $usedNotes[$note] = true;
+            $this->convertedCount++;
+        }
     }
 
     /**
@@ -568,55 +622,6 @@ class SoundfontToGusPatch
     }
 
     /**
-     * Write drum patch
-     * 
-     * @param array $zones Zones
-     * @param mixed $program Program
-     * @param mixed $presetName Preset name
-     * @param mixed $drumDir Drum directory
-     * @return void
-     */
-    private function writeDrumPatches($zones, $program, $presetName, $drumDir)
-    {
-        $usedNotes = [];
-
-        foreach ($zones as $zone) {
-            $note = $zone['low'];
-            if (isset($usedNotes[$note])) continue;
-
-            $samples = $this->collectSamplesFromInstrument($zone['instId']);
-            if (empty($samples)) continue;
-
-            $nameForFile = $zone['instName'] !== '' ? $zone['instName'] : $presetName;
-            $cleanName = preg_replace('/[^a-zA-Z0-9_\-]/', '_', $nameForFile);
-            $outFileName = sprintf("%03d_", $note) . strtolower($cleanName) . '.pat';
-            $outPath = $drumDir . '/' . $outFileName;
-
-            $sampleCount = $this->buildPatFileStreaming($samples, $outPath);
-            if ($sampleCount === 0) {
-                @unlink($outPath);
-                continue;
-            }
-
-            $this->timidityMap['drum'][$program][$note] = "drum/{$outFileName}";
-
-            if ($this->db && $this->projectId) {
-                $this->db->addPatchToProject(
-                    $this->projectId,
-                    "drum/{$outFileName}",
-                    'drum', $note, 128, $nameForFile
-                );
-            }
-
-            $this->log(sprintf("Bank 128 | [DRUM] | Note %3d: %s (%d samples)",
-                $note, $outFileName, $sampleCount));
-
-            $usedNotes[$note] = true;
-            $this->convertedCount++;
-        }
-    }
-
-    /**
      * Calculate effective root frequency
      * 
      * @param string $sampleData Sample data (46 bytes)
@@ -708,5 +713,259 @@ class SoundfontToGusPatch
         }
 
         file_put_contents($this->outputDir . '/timidity.cfg', $cfg);
+    }
+
+    private $instrumentName = [
+        '000' => 'Acoustic Grand Piano',
+        '001' => 'Bright Acoustic Piano',
+        '002' => 'Electric Grand Piano',
+        '003' => 'Honky-tonk Piano',
+        '004' => 'Electric Piano 1',
+        '005' => 'Electric Piano 2',
+        '006' => 'Harpsichord',
+        '007' => 'Clavinet',
+        '008' => 'Celesta',
+        '009' => 'Glockenspiel',
+        '010' => 'Music Box',
+        '011' => 'Vibraphone',
+        '012' => 'Marimba',
+        '013' => 'Xylophone',
+        '014' => 'Tubular Bells',
+        '015' => 'Dulcimer',
+        '016' => 'Drawbar Organ',
+        '017' => 'Percussive Organ',
+        '018' => 'Rock Organ',
+        '019' => 'Church Organ',
+        '020' => 'Reed Organ',
+        '021' => 'Accordion',
+        '022' => 'Harmonica',
+        '023' => 'Tango Accordion',
+        '024' => 'Acoustic Guitar (nylon)',
+        '025' => 'Acoustic Guitar (steel)',
+        '026' => 'Electric Guitar (jazz)',
+        '027' => 'Electric Guitar (clean)',
+        '028' => 'Electric Guitar (muted)',
+        '029' => 'Overdriven Guitar',
+        '030' => 'Distortion Guitar',
+        '031' => 'Guitar Harmonics',
+        '032' => 'Acoustic Bass',
+        '033' => 'Electric Bass (finger)',
+        '034' => 'Electric Bass (pick)',
+        '035' => 'Fretless Bass',
+        '036' => 'Slap Bass 1',
+        '037' => 'Slap Bass 2',
+        '038' => 'Synth Bass 1',
+        '039' => 'Synth Bass 2',
+        '040' => 'Violin',
+        '041' => 'Viola',
+        '042' => 'Cello',
+        '043' => 'Contrabass',
+        '044' => 'Tremolo Strings',
+        '045' => 'Pizzicato Strings',
+        '046' => 'Orchestral Harp',
+        '047' => 'Timpani',
+        '048' => 'String Ensemble 1',
+        '049' => 'String Ensemble 2',
+        '050' => 'Synth Strings 1',
+        '051' => 'Synth Strings 2',
+        '052' => 'Choir Aahs',
+        '053' => 'Voice Oohs',
+        '054' => 'Synth Voice',
+        '055' => 'Orchestra Hit',
+        '056' => 'Trumpet',
+        '057' => 'Trombone',
+        '058' => 'Tuba',
+        '059' => 'Muted Trumpet',
+        '060' => 'French Horn',
+        '061' => 'Brass Section',
+        '062' => 'Synth Brass 1',
+        '063' => 'Synth Brass 2',
+        '064' => 'Soprano Sax',
+        '065' => 'Alto Sax',
+        '066' => 'Tenor Sax',
+        '067' => 'Baritone Sax',
+        '068' => 'Oboe',
+        '069' => 'English Horn',
+        '070' => 'Bassoon',
+        '071' => 'Clarinet',
+        '072' => 'Piccolo',
+        '073' => 'Flute',
+        '074' => 'Recorder',
+        '075' => 'Pan Flute',
+        '076' => 'Blown Bottle',
+        '077' => 'Shakuhachi',
+        '078' => 'Whistle',
+        '079' => 'Ocarina',
+        '080' => 'Lead 1 (square)',
+        '081' => 'Lead 2 (sawtooth)',
+        '082' => 'Lead 3 (calliope)',
+        '083' => 'Lead 4 (chiff)',
+        '084' => 'Lead 5 (charang)',
+        '085' => 'Lead 6 (voice)',
+        '086' => 'Lead 7 (fifths)',
+        '087' => 'Lead 8 (bass + lead)',
+        '088' => 'Pad 1 (new age)',
+        '089' => 'Pad 2 (warm)',
+        '090' => 'Pad 3 (polysynth)',
+        '091' => 'Pad 4 (choir)',
+        '092' => 'Pad 5 (bowed)',
+        '093' => 'Pad 6 (metallic)',
+        '094' => 'Pad 7 (halo)',
+        '095' => 'Pad 8 (sweep)',
+        '096' => 'FX 1 (rain)',
+        '097' => 'FX 2 (soundtrack)',
+        '098' => 'FX 3 (crystal)',
+        '099' => 'FX 4 (atmosphere)',
+        '100' => 'FX 5 (brightness)',
+        '101' => 'FX 6 (goblins)',
+        '102' => 'FX 7 (echoes)',
+        '103' => 'FX 8 (sci-fi)',
+        '104' => 'Sitar',
+        '105' => 'Banjo',
+        '106' => 'Shamisen',
+        '107' => 'Koto',
+        '108' => 'Kalimba',
+        '109' => 'Bagpipe',
+        '110' => 'Fiddle',
+        '111' => 'Shanai',
+        '112' => 'Tinkle Bell',
+        '113' => 'Agogo',
+        '114' => 'Steel Drums',
+        '115' => 'Woodblock',
+        '116' => 'Taiko Drum',
+        '117' => 'Melodic Tom',
+        '118' => 'Synth Drum',
+        '119' => 'Reverse Cymbal',
+        '120' => 'Guitar Fret Noise',
+        '121' => 'Breath Noise',
+        '122' => 'Seashore',
+        '123' => 'Bird Tweet',
+        '124' => 'Telephone Ring',
+        '125' => 'Helicopter',
+        '126' => 'Applause',
+        '127' => 'Gunshot',
+    ];
+
+    private $drumName = [
+        '027' => 'High Q',
+        '028' => 'Slap',
+        '029' => 'Scratch Push',
+        '030' => 'Scratch Pull',
+        '031' => 'Sticks',
+        '032' => 'Square Click',
+        '033' => 'Metronome Click',
+        '034' => 'Metronome Bell',
+        '035' => 'Acoustic Bass Drum',
+        '036' => 'Bass Drum 1',
+        '037' => 'Side Stick',
+        '038' => 'Acoustic Snare',
+        '039' => 'Hand Clap',
+        '040' => 'Electric Snare',
+        '041' => 'Low Floor Tom',
+        '042' => 'Closed Hi-Hat',
+        '043' => 'High Floor Tom',
+        '044' => 'Pedal Hi-Hat',
+        '045' => 'Low Tom',
+        '046' => 'Open Hi-Hat',
+        '047' => 'Low-Mid Tom',
+        '048' => 'Hi-Mid Tom',
+        '049' => 'Crash Cymbal 1',
+        '050' => 'High Tom',
+        '051' => 'Ride Cymbal 1',
+        '052' => 'Chinese Cymbal',
+        '053' => 'Ride Bell',
+        '054' => 'Tambourine',
+        '055' => 'Splash Cymbal',
+        '056' => 'Cowbell',
+        '057' => 'Crash Cymbal 2',
+        '058' => 'Vibraslap',
+        '059' => 'Ride Cymbal 2',
+        '060' => 'Hi Bongo',
+        '061' => 'Low Bongo',
+        '062' => 'Mute Hi Conga',
+        '063' => 'Open Hi Conga',
+        '064' => 'Low Conga',
+        '065' => 'High Timbale',
+        '066' => 'Low Timbale',
+        '067' => 'High Agogo',
+        '068' => 'Low Agogo',
+        '069' => 'Cabasa',
+        '070' => 'Maracas',
+        '071' => 'Short Whistle',
+        '072' => 'Long Whistle',
+        '073' => 'Short Guiro',
+        '074' => 'Long Guiro',
+        '075' => 'Claves',
+        '076' => 'Hi Wood Block',
+        '077' => 'Low Wood Block',
+        '078' => 'Mute Cuica',
+        '079' => 'Open Cuica',
+        '080' => 'Mute Triangle',
+        '081' => 'Open Triangle',
+        '082' => 'Shaker',
+        '083' => 'Jingle Bell',
+        '084' => 'Belltree',
+        '085' => 'Castanets',
+        '086' => 'Mute Surdo',
+        '087' => 'Open Surdo',
+        ];
+
+    public function fixName($name, $midiNumber, $isDrum = false) {
+        if(is_numeric($midiNumber)) {
+            // Force convert to string
+            $midiNumber = sprintf('%03d', $midiNumber);
+        }
+        if(trim($name) == trim($midiNumber)) {
+            if($isDrum)
+            {
+                return isset($this->drumName[$midiNumber]) ? $this->drumName[$midiNumber] : $name;
+            }
+            else
+            {
+                return isset($this->instrumentName[$midiNumber]) ? $this->instrumentName[$midiNumber] : $name;
+            }   
+        }
+        return $name;
+    }
+
+    /**
+     * Bersihkan nama untuk dijadikan bagian dari nama file.
+     * TIDAK menyertakan ekstensi — pemanggil yang menambahkan.
+     *
+     * @param string $name      Nama mentah
+     * @param string $fallback  Nama pengganti kalau kosong
+     * @param int    $maxLength Panjang maksimum (default 60)
+     * @return string
+     */
+    public function sanitizeName($name, $fallback = 'unnamed', $maxLength = 60)
+    {
+        // 1. Transliterasi unicode → ASCII
+        if (function_exists('iconv')) {
+            $converted = @iconv('UTF-8', 'ASCII//TRANSLIT//IGNORE', $name);
+            if ($converted !== false && $converted !== '') {
+                $name = $converted;
+            }
+        }
+
+        // 2. Ganti karakter tidak aman (termasuk titik — biar ekstensi tidak nyasar)
+        $name = preg_replace('/[^a-zA-Z0-9_\-]+/', '_', $name);
+
+        // 3. Rapatkan underscore berurutan
+        $name = preg_replace('/_+/', '_', $name);
+
+        // 4. Buang underscore dan strip di ujung
+        $name = trim($name, '_-');
+
+        // 5. Batasi panjang
+        if (strlen($name) > $maxLength) {
+            $name = rtrim(substr($name, 0, $maxLength), '_-');
+        }
+
+        // 6. Fallback kalau kosong
+        if ($name === '') {
+            $name = $fallback;
+        }
+
+        return strtolower($name);
     }
 }

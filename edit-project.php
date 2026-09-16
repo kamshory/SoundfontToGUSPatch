@@ -2,7 +2,7 @@
 require_once __DIR__ . '/classes/Database.php';
 
 // Get Project and Patch IDs from URL
-$projectId = isset($_GET['id']) ? (int)$_GET['id'] : 0;
+$projectId = isset($_GET['project_id']) ? (int)$_GET['project_id'] : 0;
 
 if ($projectId === 0) {
     header('Location: index.php');
@@ -11,7 +11,7 @@ if ($projectId === 0) {
 
 try {
     $db = Database::getInstance()->getConnection();
-    $stmt = $db->prepare('SELECT name, directory_path FROM projects WHERE id = ?');
+    $stmt = $db->prepare('SELECT name, directory_path FROM project WHERE project_id = ?');
     $stmt->execute([$projectId]);
     $project = $stmt->fetch();
 
@@ -23,7 +23,7 @@ try {
     $patchId = isset($_GET['patch_id']) ? (int)$_GET['patch_id'] : 0;
     $patchToEditName = '';
     if ($patchId > 0) {
-        $patchStmt = $db->prepare('SELECT preset_name FROM patches WHERE id = ? AND project_id = ?');
+        $patchStmt = $db->prepare('SELECT preset_name FROM patch WHERE patch_id = ? AND project_id = ?');
         $patchStmt->execute([$patchId, $projectId]);
         $patchToEdit = $patchStmt->fetch();
         if ($patchToEdit) {
@@ -31,8 +31,8 @@ try {
         }
     }
 
-    // Fetch all patches for this project for server-side rendering
-    $patchesStmt = $db->prepare('SELECT id, preset_name, program_num, patch_type FROM patches WHERE project_id = ? ORDER BY patch_type, program_num');
+    // Fetch all patch for this project for server-side rendering
+    $patchesStmt = $db->prepare('SELECT patch_id, preset_name, program_num, patch_type FROM patch WHERE project_id = ? ORDER BY patch_type, program_num');
     $patchesStmt->execute([$projectId]);
     $allPatches = $patchesStmt->fetchAll();
 
@@ -204,7 +204,7 @@ try {
     <div class="container">
         <div class="main-layout">
             <div class="sidebar">
-                <div id="patches-container">
+                <div id="patch-container">
                     <h2>Patches</h2>
                     <div id="patch-list-tone">
                         <h3>Melodic (Bank 0)</h3>
@@ -214,16 +214,16 @@ try {
                             foreach ($allPatches as $p) {
                                 if ($p['patch_type'] === 'tone') {
                                     $toneCount++;
-                                    $isActive = ($p['id'] == $patchId) ? ' active' : '';
+                                    $isActive = ($p['patch_id'] == $patchId) ? ' active' : '';
                                     echo '<li class="patch-item' . $isActive . '">';
                                     echo '<div class="info"><span class="prog-num">' . $p['program_num'] . '</span><span class="preset-name">' . htmlspecialchars($p['preset_name'], ENT_QUOTES, 'UTF-8') . '</span></div>';
                                     echo '<div class="actions">';
                                     echo '<button class="preview-btn" data-program="' . $p['program_num'] . '" data-name="' . htmlspecialchars($p['preset_name'], ENT_QUOTES, 'UTF-8') . '" data-type="tone"><svg viewBox="0 0 24 24" fill="currentColor"><path d="M8,5.14V19.14L19,12.14L8,5.14Z" /></svg></button>';
-                                    echo '<a href="?id=' . $projectId . '&patch_id=' . $p['id'] . '" class="edit-btn"><svg viewBox="0 0 24 24" fill="currentColor"><path d="M20.71,7.04C21.1,6.65 21.1,6 20.71,5.63L18.37,3.29C18,2.9 17.35,2.9 16.96,3.29L15.12,5.12L18.87,8.87M3,17.25V21H6.75L17.81,9.93L14.06,6.18L3,17.25Z" /></svg></a>';
+                                    echo '<a href="?project_id=' . $projectId . '&patch_id=' . $p['patch_id'] . '" class="edit-btn"><svg viewBox="0 0 24 24" fill="currentColor"><path d="M20.71,7.04C21.1,6.65 21.1,6 20.71,5.63L18.37,3.29C18,2.9 17.35,2.9 16.96,3.29L15.12,5.12L18.87,8.87M3,17.25V21H6.75L17.81,9.93L14.06,6.18L3,17.25Z" /></svg></a>';
                                     echo '</div></li>';
                                 }
                             }
-                            if ($toneCount === 0) echo '<li>No melodic patches yet.</li>';
+                            if ($toneCount === 0) echo '<li>No melodic patch yet.</li>';
                             ?>
                         </ul>
                     </div>
@@ -236,16 +236,16 @@ try {
                              foreach ($allPatches as $p) {
                                 if ($p['patch_type'] === 'drum') {
                                     $drumCount++;
-                                    $isActive = ($p['id'] == $patchId) ? ' active' : '';
+                                    $isActive = ($p['patch_id'] == $patchId) ? ' active' : '';
                                     echo '<li class="patch-item' . $isActive . '">';
                                     echo '<div class="info"><span class="prog-num">' . $p['program_num'] . '</span><span class="preset-name">' . htmlspecialchars($p['preset_name'], ENT_QUOTES, 'UTF-8') . '</span></div>';
                                     echo '<div class="actions">';
                                     echo '<button class="preview-btn" data-program="' . $p['program_num'] . '" data-name="' . htmlspecialchars($p['preset_name'], ENT_QUOTES, 'UTF-8') . '" data-type="tone"><svg viewBox="0 0 24 24" fill="currentColor"><path d="M8,5.14V19.14L19,12.14L8,5.14Z" /></svg></button>';
-                                    echo '<a href="?id=' . $projectId . '&patch_id=' . $p['id'] . '" class="edit-btn"><svg viewBox="0 0 24 24" fill="currentColor"><path d="M20.71,7.04C21.1,6.65 21.1,6 20.71,5.63L18.37,3.29C18,2.9 17.35,2.9 16.96,3.29L15.12,5.12L18.87,8.87M3,17.25V21H6.75L17.81,9.93L14.06,6.18L3,17.25Z" /></svg></a>';
+                                    echo '<a href="?project_id=' . $projectId . '&patch_id=' . $p['patch_id'] . '" class="edit-btn"><svg viewBox="0 0 24 24" fill="currentColor"><path d="M20.71,7.04C21.1,6.65 21.1,6 20.71,5.63L18.37,3.29C18,2.9 17.35,2.9 16.96,3.29L15.12,5.12L18.87,8.87M3,17.25V21H6.75L17.81,9.93L14.06,6.18L3,17.25Z" /></svg></a>';
                                     echo '</div></li>';
                                 }
                             }
-                            if ($drumCount === 0) echo '<li>No drum patches yet.</li>';
+                            if ($drumCount === 0) echo '<li>No drum patch yet.</li>';
                              ?>
                         </ul>
                     </div>
@@ -254,7 +254,7 @@ try {
 
                     <form id="rerun-form">
                         <input type="hidden" name="project_id" value="<?php echo $projectId; ?>">
-                        <button type="submit" style="width: 100%; margin-top: 10px; padding: 10px; background-color: var(--green-color); color: white; border: none; border-radius: 6px; cursor: pointer;">Rerun</button>
+                        <button type="button" id="rerun-button" style="width: 100%; margin-top: 10px; padding: 10px; background-color: var(--green-color); color: white; border: none; border-radius: 6px; cursor: pointer;">Rerun</button>
                     </form>
 
                     <h3>Add SF2 File</h3>
@@ -414,7 +414,7 @@ try {
             const toneList = document.querySelector('#patch-list-tone ul');
             const drumList = document.querySelector('#patch-list-drum ul');
             const uploadForm = document.getElementById('upload-form');
-            const rerunForm = document.getElementById('rerun-form');
+            const rerunButton = document.getElementById('rerun-button');
             const previewModal = document.getElementById('preview-modal');
             const pianoContainer = previewModal.querySelector('.piano');
             const drumPadContainer = previewModal.querySelector('.drum-pad-container');
@@ -526,10 +526,14 @@ try {
             let instrumentPreviewSynth;
             let isSynthReady = false;
 
-            rerunForm.addEventListener('submit', (e) => {
+            rerunButton.addEventListener('click', (e) => {
                 e.preventDefault();
 
-                const projectId = e.target.querySelector('[name="project_id"]').value;
+                e.target.disabled = true;
+                e.target.style.opacity = 0.6;
+                e.target.innerText = 'Processing...';
+
+                const projectId = e.target.parentElement.querySelector('[name="project_id"]').value;
                 const xhr = new XMLHttpRequest();
 
                 xhr.open('POST', `api/editor.php?action=rerun&project_id=${encodeURIComponent(projectId)}`, true);
@@ -550,6 +554,13 @@ try {
                         if (response.success) {
                             // === EVENT SELESAI ===
                             console.log('Rerun selesai:', response.message);
+
+                            // === EVENT SELESAI ===
+                            e.target.disabled = false;
+                            e.target.style.opacity = 1;
+                            e.target.innerText = 'Rerun';
+
+                            setTimeout(() => window.location.reload(), 200);
 
                             // Contoh aksi lanjutan — pilih sesuai kebutuhan:
                             // 1) Refresh daftar patch / project details
@@ -635,7 +646,7 @@ try {
                                 if (result.success) {
                                     message = 'Upload and conversion successful!';
                                     isSuccess = true;
-                                    // Reload the page to show the new patches rendered by the server
+                                    // Reload the page to show the new patch rendered by the server
                                     window.location.reload();
                                 } else {
                                     message = 'Error: ' + (result.error || 'Conversion failed.');
@@ -681,7 +692,7 @@ try {
                 if (instrumentPreviewSynth) return;
                 instrumentPreviewSynth = new MidiSynth({
                     audioContext: sharedAudioContext, // Use the shared context
-                    patchUrlBase: `./${projectDir}/`, // e.g., './projects/MyProject_123/'
+                    patchUrlBase: `./${projectDir}/`, // e.g., './project/MyProject_123/'
                     timidityCfg: `timidity.cfg`      // Just the filename
                 });
                 try {

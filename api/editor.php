@@ -14,7 +14,7 @@ try {
 
     switch ($action) {
         case 'list_projects':
-            $stmt = $pdo->query('SELECT id, name, directory_path, created_at FROM projects ORDER BY created_at DESC');
+            $stmt = $pdo->query('SELECT project_id, name, directory_path, time_create FROM project ORDER BY time_create DESC');
             echo json_encode($stmt->fetchAll());
             break;
 
@@ -35,18 +35,19 @@ try {
             }
 
             $projectId = $db->createProject($projectName, $safeDirName);
-            echo json_encode(['success' => true, 'id' => $projectId, 'name' => $projectName, 'path' => $safeDirName]);
+            echo json_encode(['success' => true, 'project_id' => $projectId, 'name' => $projectName, 'path' => $safeDirName]);
             break;
 
         case 'upload_sf2':
         case 'upload_pat':
+            $suffix = '_'.mt_rand(100000, 999999);
             $projectId = isset($_POST['project_id']) ? (int)$_POST['project_id'] : 0;
             if ($projectId === 0) {
                 throw new Exception('Invalid Project ID.');
             }
 
             // Find project directory from DB
-            $stmt = $pdo->prepare('SELECT directory_path FROM projects WHERE id = ?');
+            $stmt = $pdo->prepare('SELECT directory_path FROM project WHERE project_id = ?');
             $stmt->execute([$projectId]);
             $project = $stmt->fetch();
 
@@ -71,9 +72,9 @@ try {
 
             // --- Logic to handle patch updates ---
             // 1. Get a list of all existing patch files for this project before conversion.
-            $stmtOldFiles = $pdo->prepare('SELECT id, file_name FROM patches WHERE project_id = ?');
+            $stmtOldFiles = $pdo->prepare('SELECT project_id, file_name FROM patch WHERE project_id = ?');
             $stmtOldFiles->execute([$projectId]);
-            $oldPatches = $stmtOldFiles->fetchAll(PDO::FETCH_KEY_PAIR); // [id => file_name]
+            $oldPatches = $stmtOldFiles->fetchAll(PDO::FETCH_KEY_PAIR); // [project_id => file_name]
             // ---
 
             // Determine file type by content signature, not extension
@@ -90,7 +91,7 @@ try {
                 $targetPath = rtrim($outputDir, "/\\")."/".basename($uploadedFile['name']);
                 move_uploaded_file($uploadPath, $targetPath);
 
-                $stmt = $pdo->prepare("UPDATE project SET source_path = ? WHERE id = ?");
+                $stmt = $pdo->prepare("UPDATE project SET source_path = ? WHERE project_id = ?");
                 $stmt->execute([basename($targetPath), $projectId]);
 
 
@@ -99,7 +100,7 @@ try {
                 $converter->setLogger(function ($message) { /* Silent for API */ });
                 $converter->setDatabase($db);
                 $converter->setProjectId($projectId);
-                $converter->convert($uploadPath, $outputDir);
+                $converter->convert($uploadPath, $outputDir, $suffix);
 
             } elseif (substr($fileSignature, 0, 2) === 'PK') { // This is a ZIP file
                 // Handle ZIP file upload
@@ -190,9 +191,9 @@ try {
                 throw new Exception('Invalid file type. Only .sf2 or .zip files are allowed.');
             }
 
-            // --- Logic to clean up old/updated patches ---
-            // 2. Get the list of patches after conversion.
-            $stmtNewFiles = $pdo->prepare('SELECT file_name FROM patches WHERE project_id = ?');
+            // --- Logic to clean up old/updated patch ---
+            // 2. Get the list of patch after conversion.
+            $stmtNewFiles = $pdo->prepare('SELECT file_name FROM patch WHERE project_id = ?');
             $stmtNewFiles->execute([$projectId]);
             $newPatchFiles = $stmtNewFiles->fetchAll(PDO::FETCH_COLUMN);
             $newPatchFilesSet = array_flip($newPatchFiles); // Use as a fast-lookup set
@@ -207,19 +208,19 @@ try {
                         unlink($fullPath);
                     }
                     // Also remove from database
-                    $stmtDelete = $pdo->prepare('DELETE FROM patches WHERE id = ?');
+                    $stmtDelete = $pdo->prepare('DELETE FROM patch WHERE project_id = ?');
                     $stmtDelete->execute([$patchId]);
                     $deletedCount++;
                 }
             }
             // ---
 
-            echo json_encode(['success' => true, 'message' => 'SF2 converted. ' . ($deletedCount > 0 ? "$deletedCount old patches cleaned up." : "")]);
+            echo json_encode(['success' => true, 'message' => 'SF2 converted. ' . ($deletedCount > 0 ? "$deletedCount old patch cleaned up." : "")]);
             break;
 
         case 'get_project_details':
             $projectId = isset($_GET['project_id']) ? (int)$_GET['project_id'] : 0;
-            $stmt = $pdo->prepare('SELECT * FROM patches WHERE project_id = ? ORDER BY patch_type, program_num');
+            $stmt = $pdo->prepare('SELECT * FROM patch WHERE project_id = ? ORDER BY patch_type, program_num');
             $stmt->execute([$projectId]);
             echo json_encode($stmt->fetchAll());
             break;
@@ -228,9 +229,9 @@ try {
             $patchId = isset($_GET['patch_id']) ? (int)$_GET['patch_id'] : 0;
             $stmt = $pdo->prepare(
                 'SELECT p.file_name, pr.directory_path 
-                 FROM patches p 
-                 JOIN projects pr ON p.project_id = pr.id 
-                 WHERE p.id = ?'
+                 FROM patch p 
+                 JOIN project pr ON p.project_id = pr.project_id 
+                 WHERE p.patch_id = ?'
             );
             $stmt->execute([$patchId]);
             $patchInfo = $stmt->fetch();
@@ -258,7 +259,7 @@ try {
 
         case 'download_project':
             $projectId = isset($_GET['project_id']) ? (int)$_GET['project_id'] : 0;
-            $stmt = $pdo->prepare('SELECT name, directory_path FROM projects WHERE id = ?');
+            $stmt = $pdo->prepare('SELECT name, directory_path FROM project WHERE project_id = ?');
             $stmt->execute([$projectId]);
             $project = $stmt->fetch();
 
@@ -303,6 +304,11 @@ try {
                 if (!$file->isFile()) continue;
 
                 $filePath     = $file->getRealPath();
+                $arr = explode('.', $filePath);
+                $ext = $arr[count($arr) - 1];
+                if(!in_array(strtolower($ext), ['pat', 'cfg'])) {
+                    continue;
+                }
                 $relativePath = substr($filePath, strlen(realpath($projectDir)) + 1);
 
                 // Ganti separator Windows jika ada
@@ -333,7 +339,7 @@ try {
                 throw new Exception('Invalid Project ID.');
             }
 
-            $stmt = $pdo->prepare('SELECT name, directory_path, source_path FROM projects WHERE id = ?');
+            $stmt = $pdo->prepare('SELECT name, directory_path, source_path FROM project WHERE project_id = ?');
             $stmt->execute([$projectId]);
             $project = $stmt->fetch();
 
@@ -355,11 +361,14 @@ try {
             }
 
             // ---------------------------------------------------------------
-            // 1) Hapus semua record patches lama dari database
+            // 1) Hapus semua record patch lama dari database
             // ---------------------------------------------------------------
-            $stmtDel = $pdo->prepare('DELETE FROM patches WHERE project_id = ?');
+            $stmtDel = $pdo->prepare('DELETE FROM patch WHERE project_id = ?');
             $stmtDel->execute([$projectId]);
             $deletedDbCount = $stmtDel->rowCount();
+
+            // patch will be updated using upsertPatchForProject() method.
+            // so no need to delete the old patch
 
             // ---------------------------------------------------------------
             // 2) Bersihkan direktori: hapus semua kecuali file source
@@ -370,7 +379,6 @@ try {
                 new RecursiveDirectoryIterator($projectDir, FilesystemIterator::SKIP_DOTS),
                 RecursiveIteratorIterator::CHILD_FIRST
             );
-
             foreach ($items as $item) {
                 $path = $item->getPathname();
                 $real = $item->getRealPath();
@@ -394,11 +402,12 @@ try {
             // 3) Jalankan ulang konversi
             // ---------------------------------------------------------------
             try {
+                $suffix = '_'.mt_rand(100000, 999999);
                 $converter = new SoundfontToGusPatch();
                 $converter->setLogger(function ($message) { /* Silent for API */ });
                 $converter->setDatabase($db);
                 $converter->setProjectId($projectId);
-                $converter->convert($sourcePath, $projectDir);
+                $converter->convert($sourcePath, $projectDir, $suffix);
             } catch (Exception $e) {
                 // Konversi gagal — biarkan user tahu, tapi DB sudah kosong
                 throw new Exception('Conversion failed: ' . $e->getMessage());
@@ -407,7 +416,7 @@ try {
             // ---------------------------------------------------------------
             // 4) Hitung berapa patch baru yang berhasil di-insert
             // ---------------------------------------------------------------
-            $stmtCount = $pdo->prepare('SELECT COUNT(*) FROM patches WHERE project_id = ?');
+            $stmtCount = $pdo->prepare('SELECT COUNT(*) FROM patch WHERE project_id = ?');
             $stmtCount->execute([$projectId]);
             $newCount = (int)$stmtCount->fetchColumn();
 

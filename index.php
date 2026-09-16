@@ -120,8 +120,8 @@
                                     <small>Created: ${new Date(proj.created_at).toLocaleString()}</small>
                                 </div>
                                 <div class="actions">
-                                    <a href="edit-project.php?id=${proj.id}" class="edit-btn">Edit</a>
-                                    <a href="api/editor.php?action=download_project&project_id=${proj.id}" class="download-btn">Download ZIP</a>
+                                    <a href="edit-project.php?project_id=${proj.project_id}" class="edit-btn">Edit</a>
+                                    <a href="api/editor.php?action=download_project&project_id=${proj.project_id}" class="download-btn">Download ZIP</a>
                                 </div>
                             `;
                             projectList.appendChild(li);
