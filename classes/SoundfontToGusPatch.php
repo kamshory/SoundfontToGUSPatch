@@ -290,9 +290,11 @@ class SoundfontToGusPatch
                 ? unpack('v', substr($this->pdtaChunks['ibag'], $nextOffset, 2))[1]
                 : (int)(strlen($this->pdtaChunks['igen']) / 4);
 
-            $coarseTune = 0;
-            $fineTune = 0;
-            $sampleId = null;
+            $coarseTune        = 0;
+            $fineTune          = 0;
+            $scaleTuning       = 100;  // default SF2: 100 cents per semitone
+            $overridingRootKey = null;
+            $sampleId          = null;
 
             for ($l = $igenStart; $l < $igenEnd; $l++) {
                 $igenId = unpack('v', substr($this->pdtaChunks['igen'], $l * 4, 2))[1];
@@ -304,15 +306,26 @@ class SoundfontToGusPatch
                     $fineTune = $amount;
                 } elseif ($igenId == 53) {  // sampleID
                     $sampleId = $amount;
+                } elseif ($igenId == 56) {  // scaleTuning (cents per key, default 100)
+                    // Nilai di igen adalah unsigned 16-bit, tapi semantiknya 0–1200
+                    $scaleTuning = unpack('v', substr($this->pdtaChunks['igen'], $l * 4 + 2, 2))[1];
+                } elseif ($igenId == 58) {  // overridingRootKey
+                    // Hanya berlaku jika nilai 0–127
+                    $ork = unpack('v', substr($this->pdtaChunks['igen'], $l * 4 + 2, 2))[1];
+                    if ($ork >= 0 && $ork <= 127) {
+                        $overridingRootKey = $ork;
+                    }
                 }
             }
 
             if ($sampleId !== null && isset($this->shdr_list[$sampleId]) && !isset($seen[$sampleId])) {
                 $seen[$sampleId] = true;
-                $totalTuneCents = $coarseTune * 100 + $fineTune;
                 $samples[] = [
-                    'data' => $this->shdr_list[$sampleId],
-                    'tuneCents' => $totalTuneCents
+                    'data'              => $this->shdr_list[$sampleId],
+                    'coarseTune'        => $coarseTune,
+                    'fineTune'          => $fineTune,
+                    'scaleTuning'       => $scaleTuning,
+                    'overridingRootKey' => $overridingRootKey,
                 ];
             }
         }
@@ -445,30 +458,27 @@ class SoundfontToGusPatch
         // chPitchCorrection dalam cents (signed)
         $pitchCorr = unpack('c', substr($sampleData, 41, 1))[1];
 
-        // Pitch efektif dalam MIDI note (dengan tuning dan pitch correction)
-        // scaleTuning mempengaruhi seberapa besar pengaruh root key terhadap pitch.
-        // Namun pada level "root_freq", yang ingin kita tahu adalah:
-        //   berapa Hz natural dari sample INI setelah semua tuning.
-        $midiNote = $rootKey + ($pitchCorr / 100.0)
-                + $coarseTune
-                + ($fineTune / 100.0);
+        // root_freq = frekuensi alami sample saat dimainkan tepat di rootKey.
+        // Ini mencakup:
+        //   - pitchCorr  : koreksi fine dari shdr (cents)
+        //   - coarseTune : offset semitone dari igen/pgen
+        //   - fineTune   : offset cents dari igen/pgen
+        //
+        // scaleTuning TIDAK dimasukkan ke sini. scaleTuning (igen 56) mengatur
+        // bagaimana player men-stretch pitch per key (default 100 cents/semitone).
+        // Player .pat standar (TiMidity++) sudah mengasumsikan 100 cents/semitone,
+        // sehingga memasukkan scaleTuning ke root_freq justru menyebabkan transpose.
+        $midiNote = $rootKey
+                  + ($pitchCorr / 100.0)
+                  + $coarseTune
+                  + ($fineTune / 100.0);
 
-        // scaleTuning ≠ 100 → ubah rasio. Cara paling aman: 
-        // skala efek root key terhadap pitch.
-        // NOTE: ini kompromi; player .pat Anda tidak punya field scaleTuning,
-        // jadi kita "bakar" efeknya ke root_freq.
-        if ($scaleTuning !== 100) {
-            // Selisih dari C4 (60) dikali faktor scaleTuning
-            $offsetFromC4 = $midiNote - 60;
-            $midiNote = 60 + ($offsetFromC4 * $scaleTuning / 100.0);
-        }
-
-        // Konversi MIDI note ke Hz
-        $freqHz = 440 * pow(2, ($midiNote - 69) / 12);
+        // Konversi MIDI note ke Hz  (A4=69=440Hz)
+        $freqHz = 440.0 * pow(2.0, ($midiNote - 69.0) / 12.0);
 
         // Clamp ke rentang aman
-        if ($freqHz < 8)     $freqHz = 8;
-        if ($freqHz > 12544) $freqHz = 12544;
+        if ($freqHz < 8.0)     $freqHz = 8.0;
+        if ($freqHz > 12544.0) $freqHz = 12544.0;
 
         return $freqHz;
     }
@@ -511,24 +521,19 @@ class SoundfontToGusPatch
             if ($pcmSamples <= 0 || $pcmSamples > 4 * 1024 * 1024) continue;
             $pcmLenBytes = $pcmSamples * 2;
 
-            // Kumpulkan tuning dari array (kalau ada)
-            $coarseTune        = is_array($s_chunk) && isset($s_chunk['coarseTune'])        ? $s_chunk['coarseTune']        : 0;
-            $fineTune          = is_array($s_chunk) && isset($s_chunk['fineTune'])          ? $s_chunk['fineTune']          : 0;
-            $scaleTuning       = is_array($s_chunk) && isset($s_chunk['scaleTuning'])       ? $s_chunk['scaleTuning']       : 100;
-            $overridingRootKey = is_array($s_chunk) && isset($s_chunk['overridingRootKey']) ? $s_chunk['overridingRootKey'] : null;
-            $presetTuneCents   = is_array($s_chunk) && isset($s_chunk['presetTuneCents'])   ? $s_chunk['presetTuneCents']   : 0;
+            // Ambil tuning dari array yang sudah dikumpulkan di collectSamplesFromInstrument
+            $coarseTune        = is_array($s_chunk) && isset($s_chunk['coarseTune'])        ? (int)$s_chunk['coarseTune']        : 0;
+            $fineTune          = is_array($s_chunk) && isset($s_chunk['fineTune'])          ? (int)$s_chunk['fineTune']          : 0;
+            $scaleTuning       = is_array($s_chunk) && isset($s_chunk['scaleTuning'])       ? (int)$s_chunk['scaleTuning']       : 100;
+            $overridingRootKey = is_array($s_chunk) && isset($s_chunk['overridingRootKey']) ? $s_chunk['overridingRootKey']      : null;
 
-            // Gabungkan preset + instrument tuning
-            $presetCoarse = intdiv($presetTuneCents, 100);
-            $presetFine   = $presetTuneCents % 100;
-            $totalCoarse  = $coarseTune + $presetCoarse;
-            $totalFine    = $fineTune + $presetFine;
-
-            // Hitung frekuensi root efektif
+            // Hitung frekuensi root efektif.
+            // scaleTuning diteruskan hanya untuk referensi, tapi tidak dipakai
+            // dalam kalkulasi root_freq (lihat calculateEffectiveRootFreq).
             $rootFreqHz = $this->calculateEffectiveRootFreq(
                 $sampleData,
-                $totalCoarse,
-                $totalFine,
+                $coarseTune,
+                $fineTune,
                 $scaleTuning,
                 $overridingRootKey
             );
