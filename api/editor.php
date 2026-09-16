@@ -248,7 +248,6 @@ try {
             break;
 
         case 'download_project':
-            // This part is similar to the old sf2-to-path.php but for an existing project dir
             $projectId = isset($_GET['project_id']) ? (int)$_GET['project_id'] : 0;
             $stmt = $pdo->prepare('SELECT name, directory_path FROM projects WHERE id = ?');
             $stmt->execute([$projectId]);
@@ -259,30 +258,64 @@ try {
             }
 
             $projectDir = $projectsBaseDir . '/' . $project['directory_path'];
-            $zipFileName = sys_get_temp_dir() . '/' . $project['directory_path'] . '.zip';
+            if (!is_dir($projectDir)) {
+                throw new Exception('Project directory not found on disk.');
+            }
+
+            // Nama folder root di dalam ZIP = nama project yang sudah disanitasi
+            $rootFolder = preg_replace('/[^a-zA-Z0-9_\-]/', '_', $project['name']);
+            if ($rootFolder === '') $rootFolder = 'project_' . $projectId;
+
+            $zipFileName = sys_get_temp_dir() . '/' . $project['directory_path'] . '_' . time() . '.zip';
 
             $zip = new ZipArchive();
             if ($zip->open($zipFileName, ZipArchive::CREATE | ZipArchive::OVERWRITE) !== TRUE) {
                 throw new \Exception('Failed to create ZIP archive.');
             }
 
-            $files = new RecursiveIteratorIterator(new RecursiveDirectoryIterator($projectDir), RecursiveIteratorIterator::LEAVES_ONLY);
-            foreach ($files as $name => $file) {
-                if (!$file->isDir()) {
-                    $filePath = $file->getRealPath();
-                    $relativePath = substr($filePath, strlen($projectDir) + 1);
-                    $zip->addFile($filePath, $relativePath);
+            // 1) Tambahkan direktori kosong penting agar struktur tetap ada
+            $zip->addEmptyDir($rootFolder);
+            foreach (['tone', 'drum'] as $sub) {
+                if (is_dir($projectDir . '/' . $sub)) {
+                    $zip->addEmptyDir($rootFolder . '/' . $sub);
                 }
             }
+
+            // 2) Iterasi semua file (termasuk symlink target)
+            $iterator = new RecursiveIteratorIterator(
+                new RecursiveDirectoryIterator(
+                    $projectDir,
+                    FilesystemIterator::SKIP_DOTS | FilesystemIterator::FOLLOW_SYMLINKS
+                ),
+                RecursiveIteratorIterator::LEAVES_ONLY
+            );
+
+            foreach ($iterator as $file) {
+                if (!$file->isFile()) continue;
+
+                $filePath     = $file->getRealPath();
+                $relativePath = substr($filePath, strlen(realpath($projectDir)) + 1);
+
+                // Ganti separator Windows jika ada
+                $relativePath = str_replace('\\', '/', $relativePath);
+
+                // Path di dalam ZIP: <root>/tone/xxx.pat, dst.
+                $zip->addFile($filePath, $rootFolder . '/' . $relativePath);
+            }
+
             $zip->close();
 
+            // Bersihkan buffer agar tidak mengotori output ZIP
+            if (ob_get_level()) {
+                ob_end_clean();
+            }
+
             header('Content-Type: application/zip');
-            header('Content-Disposition: attachment; filename="' . $project['name'] . '.zip"');
+            header('Content-Disposition: attachment; filename="' . $rootFolder . '.zip"');
             header('Content-Length: ' . filesize($zipFileName));
-            ob_clean();
-            flush();
+            header('Cache-Control: no-store');
             readfile($zipFileName);
-            unlink($zipFileName); // Clean up temp zip
+            unlink($zipFileName);
             exit;
 
         default:
