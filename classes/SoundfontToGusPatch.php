@@ -352,7 +352,6 @@ class SoundfontToGusPatch
         if (empty($allSamples)) return;
 
         list($patContent, $sampleCount) = $this->buildPatFile($allSamples);
-        error_log(print_r($sampleCount, true));
         if ($patContent === null) return;
 
         $formattedMidiNum = sprintf("%03d", $program);
