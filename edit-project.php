@@ -251,6 +251,12 @@ try {
                     </div>
                 </div>
                 <div class="upload-box">
+
+                    <form id="rerun-form">
+                        <input type="hidden" name="project_id" value="<?php echo $projectId; ?>">
+                        <button type="submit" style="width: 100%; margin-top: 10px; padding: 10px; background-color: var(--green-color); color: white; border: none; border-radius: 6px; cursor: pointer;">Rerun</button>
+                    </form>
+
                     <h3>Add SF2 File</h3>
                     <form id="upload-form">
                         <input type="hidden" name="project_id" value="<?php echo $projectId; ?>">
@@ -408,6 +414,7 @@ try {
             const toneList = document.querySelector('#patch-list-tone ul');
             const drumList = document.querySelector('#patch-list-drum ul');
             const uploadForm = document.getElementById('upload-form');
+            const rerunForm = document.getElementById('rerun-form');
             const previewModal = document.getElementById('preview-modal');
             const pianoContainer = previewModal.querySelector('.piano');
             const drumPadContainer = previewModal.querySelector('.drum-pad-container');
@@ -518,6 +525,69 @@ try {
             let editorApp; // Instance of GusEditorApp
             let instrumentPreviewSynth;
             let isSynthReady = false;
+
+            rerunForm.addEventListener('submit', (e) => {
+                e.preventDefault();
+
+                const projectId = e.target.querySelector('[name="project_id"]').value;
+                const xhr = new XMLHttpRequest();
+
+                xhr.open('POST', `api/editor.php?action=rerun&project_id=${encodeURIComponent(projectId)}`, true);
+
+                xhr.onreadystatechange = function () {
+                    if (xhr.readyState !== XMLHttpRequest.DONE) return;
+
+                    if (xhr.status === 200) {
+                        let response;
+                        try {
+                            response = JSON.parse(xhr.responseText);
+                        } catch (err) {
+                            console.error('Invalid JSON response:', xhr.responseText);
+                            alert('Rerun gagal: respons tidak valid.');
+                            return;
+                        }
+
+                        if (response.success) {
+                            // === EVENT SELESAI ===
+                            console.log('Rerun selesai:', response.message);
+
+                            // Contoh aksi lanjutan — pilih sesuai kebutuhan:
+                            // 1) Refresh daftar patch / project details
+                            if (typeof loadProjectDetails === 'function') {
+                                loadProjectDetails(projectId);
+                            }
+
+                            // 2) Tampilkan notifikasi
+                            if (typeof showToast === 'function') {
+                                showToast(response.message || 'Rerun selesai', 'success');
+                            } else {
+                                //window.location.reload();
+                            }
+
+                            // 3) Custom event, biar komponen lain bisa listen
+                            document.dispatchEvent(new CustomEvent('project:rerun-complete', {
+                                detail: { projectId: projectId, response: response }
+                            }));
+                        } else {
+                            alert('Rerun gagal: ' + (response.error || 'Unknown error'));
+                        }
+                    } else {
+                        // Coba parse error body dari server
+                        let msg = 'HTTP ' + xhr.status;
+                        try {
+                            const err = JSON.parse(xhr.responseText);
+                            if (err.error) msg += ': ' + err.error;
+                        } catch (_) { /* ignore */ }
+                        alert('Rerun gagal: ' + msg);
+                    }
+                };
+
+                xhr.onerror = function () {
+                    alert('Rerun gagal: koneksi error.');
+                };
+
+                xhr.send(); // tidak perlu FormData karena tidak ada file
+            });
 
             function handleUpload() {
                 const submitButton = uploadForm.querySelector('button');

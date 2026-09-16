@@ -84,7 +84,16 @@ try {
             $fileSignature = fread($fp, 4);
             fclose($fp);
 
-            if ($fileSignature === 'RIFF') { // This is an SF2 file
+            if ($fileSignature === 'RIFF') { 
+                // This is an SF2 file
+                // Move uploaded file to target direcory
+                $targetPath = rtrim($outputDir, "/\\")."/".basename($uploadedFile['name']);
+                move_uploaded_file($uploadPath, $targetPath);
+
+                $stmt = $pdo->prepare("UPDATE project SET source_path = ? WHERE id = ?");
+                $stmt->execute([basename($targetPath), $projectId]);
+
+
                 // Run conversion for SF2
                 $converter = new SoundfontToGusPatch();
                 $converter->setLogger(function ($message) { /* Silent for API */ });
@@ -317,6 +326,101 @@ try {
             readfile($zipFileName);
             unlink($zipFileName);
             exit;
+
+        case 'rerun':
+            $projectId = isset($_GET['project_id']) ? (int)$_GET['project_id'] : 0;
+            if ($projectId === 0) {
+                throw new Exception('Invalid Project ID.');
+            }
+
+            $stmt = $pdo->prepare('SELECT name, directory_path, source_path FROM projects WHERE id = ?');
+            $stmt->execute([$projectId]);
+            $project = $stmt->fetch();
+
+            if (!$project) {
+                throw new Exception('Project not found.');
+            }
+
+            $projectDir = $projectsBaseDir . '/' . $project['directory_path'];
+            if (!is_dir($projectDir)) {
+                throw new Exception('Project directory not found on disk.');
+            }
+            if (empty($project['source_path'])) {
+                throw new Exception('Source path not found on disk.');
+            }
+
+            $sourcePath = $projectDir . '/' . ltrim($project['source_path'], '/');
+            if (!file_exists($sourcePath)) {
+                throw new Exception('Source file not found: ' . $project['source_path']);
+            }
+
+            // ---------------------------------------------------------------
+            // 1) Hapus semua record patches lama dari database
+            // ---------------------------------------------------------------
+            $stmtDel = $pdo->prepare('DELETE FROM patches WHERE project_id = ?');
+            $stmtDel->execute([$projectId]);
+            $deletedDbCount = $stmtDel->rowCount();
+
+            // ---------------------------------------------------------------
+            // 2) Bersihkan direktori: hapus semua kecuali file source
+            // ---------------------------------------------------------------
+            $sourceReal = realpath($sourcePath);
+
+            $items = new RecursiveIteratorIterator(
+                new RecursiveDirectoryIterator($projectDir, FilesystemIterator::SKIP_DOTS),
+                RecursiveIteratorIterator::CHILD_FIRST
+            );
+
+            foreach ($items as $item) {
+                $path = $item->getPathname();
+                $real = $item->getRealPath();
+
+                if ($real === $sourceReal) continue;
+                if ($item->isDir() && strpos($sourceReal, $real . DIRECTORY_SEPARATOR) === 0) continue;
+
+                if ($item->isDir()) {
+                    @rmdir($path);
+                } else {
+                    @unlink($path);
+                }
+            }
+
+            // Pastikan tone/ dan drum/ ada kembali (kalau source di root, dua
+            // direktori ini pasti sudah terhapus)
+            if (!is_dir($projectDir . '/tone')) mkdir($projectDir . '/tone', 0777, true);
+            if (!is_dir($projectDir . '/drum')) mkdir($projectDir . '/drum', 0777, true);
+
+            // ---------------------------------------------------------------
+            // 3) Jalankan ulang konversi
+            // ---------------------------------------------------------------
+            try {
+                $converter = new SoundfontToGusPatch();
+                $converter->setLogger(function ($message) { /* Silent for API */ });
+                $converter->setDatabase($db);
+                $converter->setProjectId($projectId);
+                $converter->convert($sourcePath, $projectDir);
+            } catch (Exception $e) {
+                // Konversi gagal — biarkan user tahu, tapi DB sudah kosong
+                throw new Exception('Conversion failed: ' . $e->getMessage());
+            }
+
+            // ---------------------------------------------------------------
+            // 4) Hitung berapa patch baru yang berhasil di-insert
+            // ---------------------------------------------------------------
+            $stmtCount = $pdo->prepare('SELECT COUNT(*) FROM patches WHERE project_id = ?');
+            $stmtCount->execute([$projectId]);
+            $newCount = (int)$stmtCount->fetchColumn();
+
+            echo json_encode([
+                'success' => true,
+                'message' => sprintf(
+                    'Rerun selesai. %d patch lama dihapus, %d patch baru dibuat.',
+                    $deletedDbCount, $newCount
+                ),
+                'deleted' => $deletedDbCount,
+                'created' => $newCount,
+            ]);
+            break;
 
         default:
             http_response_code(404);

@@ -41,6 +41,7 @@ class Database
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 name TEXT NOT NULL,
                 directory_path TEXT NOT NULL UNIQUE,
+                source_path TEXT,
                 created_at DATETIME DEFAULT CURRENT_TIMESTAMP
             )',
             'CREATE TABLE IF NOT EXISTS patches (
