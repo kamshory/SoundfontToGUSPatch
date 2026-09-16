@@ -377,7 +377,7 @@ class SoundfontToGusPatch
     /**
      * Write tone patch for Creative Sound Blaster AWE32/32/64
      * 
-     * @param $zones Zones    
+     * @param array $zones Zones    
      * @param mixed $program Program
      * @param mixed $bank Bank
      * @param mixed $presetName Preset name
@@ -428,7 +428,7 @@ class SoundfontToGusPatch
     /**
      * Build pat file for Creative Sound Blaster AWE32/32/64 by streaming
      * 
-     * @param $sampleChunks SF2 samples (shdr entry) and tuneCents
+     * @param array $sampleChunks SF2 samples (shdr entry) and tuneCents
      * @param mixed $outPath Output path to write PAT file
      * @throws Exception
      * @return int The number of valid samples written
@@ -570,7 +570,7 @@ class SoundfontToGusPatch
     /**
      * Write drum patch
      * 
-     * @param $zones Zones
+     * @param array $zones Zones
      * @param mixed $program Program
      * @param mixed $presetName Preset name
      * @param mixed $drumDir Drum directory
