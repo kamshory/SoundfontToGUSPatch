@@ -71,6 +71,7 @@ class SoundfontToGusPatch
 
     /**
      * Sets the project ID for database logging.
+     * 
      * @param int $projectId
      */
     public function setProjectId($projectId) 
@@ -80,6 +81,7 @@ class SoundfontToGusPatch
 
     /**
      * Sets the database manager instance.
+     * 
      * @param Database $db
      */
     public function setDatabase($db) 
@@ -141,7 +143,7 @@ class SoundfontToGusPatch
                 $listContentEnd   = $listContentStart + ($size - 4);
 
                 if ($type === 'sdta') {
-                    // Streaming: jangan baca isi LIST, cukup cari subchunk 'smpl'
+                    // Streaming: don't read LIST sdta content, just find smpl chunk
                     $cursor = $listContentStart;
                     while ($cursor + 8 <= $listContentEnd) {
                         fseek($this->fp, $cursor, SEEK_SET);
@@ -158,11 +160,11 @@ class SoundfontToGusPatch
                         $cursor += 8 + $subSize;
                         if ($subSize % 2 !== 0) $cursor++;
                     }
-                    // Lompat ke akhir LIST
+                    // Jump to end of LIST
                     fseek($this->fp, $listContentEnd, SEEK_SET);
 
                 } elseif ($type === 'pdta') {
-                    // pdta kecil (< 1 MB), aman dibaca penuh
+                    // pdta small (< 1 MB), safe to read
                     $listContent = fread($this->fp, $size - 4);
                     $offset = 0;
                     while ($offset < strlen($listContent)) {
@@ -174,7 +176,7 @@ class SoundfontToGusPatch
                     }
 
                 } else {
-                    // LIST lain — skip
+                    // Other LIST - skip
                     fseek($this->fp, $listContentEnd, SEEK_SET);
                 }
 
@@ -192,7 +194,7 @@ class SoundfontToGusPatch
     }
 
     /**
-     * Parse pdta subchunks
+     * Parse pdta subchunks from RIFF
      * 
      * @throws Exception
      * @return void
@@ -208,9 +210,11 @@ class SoundfontToGusPatch
     }
 
     /**
+     * Parse SF2 struct array from binary data
+     * 
      * @param string $data Data
      * @param int $struct_size Struct size
-     * @return array
+     * @return array Struct array
      */
     private function parseStructArray($data, $struct_size)
     {
@@ -267,7 +271,7 @@ class SoundfontToGusPatch
      * 
      * @param mixed $pbagStart Pbag start offset
      * @param mixed $pbagEnd Pbag end offset
-     * @return array
+     * @return array Zones
      */
     private function parsePresetZones($pbagStart, $pbagEnd)
     {
@@ -307,8 +311,8 @@ class SoundfontToGusPatch
     /**
      * Get all samples (shdr entry) from an instrument
      * 
-     * @param int $instId
-     * @return array
+     * @param int $instId Instrument ID
+     * @return array Samples
      */
     private function collectSamplesFromInstrument($instId)
     {
@@ -371,15 +375,16 @@ class SoundfontToGusPatch
     }
 
     /**
-     * Write tone patch
-     * @param array $zones Zones    
+     * Write tone patch for Creative Sound Blaster AWE32/32/64
+     * 
+     * @param $zones Zones    
      * @param mixed $program Program
      * @param mixed $bank Bank
      * @param mixed $presetName Preset name
      * @param mixed $toneDir Tone directory
      * @return void
      */
-    private function writeTonePatch(array $zones, $program, $bank, $presetName, $toneDir)
+    private function writeTonePatch($zones, $program, $bank, $presetName, $toneDir)
     {
         $allSamples = [];
         $seen = [];
@@ -420,24 +425,32 @@ class SoundfontToGusPatch
         $this->convertedCount++;
     }
 
-    private function buildPatFileStreaming(array $sampleChunks, $outPath)
+    /**
+     * Build pat file for Creative Sound Blaster AWE32/32/64 by streaming
+     * 
+     * @param $sampleChunks SF2 samples (shdr entry) and tuneCents
+     * @param mixed $outPath Output path to write PAT file
+     * @throws Exception
+     * @return int The number of valid samples written
+     */
+    private function buildPatFileStreaming($sampleChunks, $outPath)
     {
         $out = fopen($outPath, 'wb');
         if (!$out) {
             throw new \Exception("Cannot open output file: {$outPath}");
         }
 
-        // ---- Tulis instrument header 239 byte (sample count = placeholder) ----
+        // Write pat file header (239 bytes) for Creative Sound Blaster AWE32/32/64
         $header  = "GF1PATCH110\0";
         $header .= str_pad("ID#000002\0", 10, "\0");
         $header .= str_pad("PHP SF2->PAT", 60, "\0");
         $header .= str_repeat("\0", 116);
-        $header .= pack('C', 0);        // placeholder sample count di offset 198
+        $header .= pack('C', 0);        // placeholder sample count at offset 198
         $header .= str_repeat("\0", 40);
         fwrite($out, $header);
 
         $validSamplesCount = 0;
-        $blockSize = 1024 * 1024;       // baca PCM per 1 MB
+        $blockSize = 1024 * 1024;       // read PCM per 1 MB
 
         foreach ($sampleChunks as $s_chunk) {
             // ---- Parsing shdr ----
@@ -496,7 +509,7 @@ class SoundfontToGusPatch
                 $modes = 0x01;
             }
 
-            // ---- Bangun wave header 96 byte di memory (kecil) ----
+            // ---- Build wave header 96 byte in memory (small) ----
             $waveHeader  = str_pad(substr($s_name, 0, 7), 7, "\0");
             $waveHeader .= pack('C', 0);
             $waveHeader .= pack('V', $pcmLenBytes);
@@ -505,11 +518,11 @@ class SoundfontToGusPatch
             $waveHeader .= pack('v', $sampleRate);
             $waveHeader .= pack('V', 8);
             $waveHeader .= pack('V', 12544);
-            $waveHeader .= pack('V', (int)round($rootFreqHz * 1024));  // fixed-point 10.22 (sesuai konvensi Anda)
+            $waveHeader .= pack('V', (int)round($rootFreqHz * 1024));  // fixed-point 10.22 (according to convention)
             $waveHeader .= pack('v', 0);
             $waveHeader .= pack('C', 8);
             $waveHeader .= pack('CCCCCC', 63, 63, 63, 63, 63, 63);
-            $waveHeader .= pack('CCCCCC', 0, 0, 0, 0, 0, 0);
+            $waveHeader .= pack('CCCCCC', 0, 0, 0, 0, 0, 0);    // loop envelope (unused in GUS)
             $waveHeader .= str_repeat("\0", 6);
             $waveHeader .= pack('C', $modes);
             $waveHeader .= str_repeat("\0", 40);
@@ -518,7 +531,7 @@ class SoundfontToGusPatch
 
             fwrite($out, $waveHeader);
 
-            // ---- Streaming PCM per blok ----
+            // ---- Streaming PCM per block ----
             $seekPos = $this->smplOffset + ($s_start * 2);
             if (fseek($this->fp, $seekPos, SEEK_SET) !== 0) continue;
 
@@ -536,8 +549,8 @@ class SoundfontToGusPatch
             }
 
             if (!$pcmOk) {
-                // Baca PCM gagal di tengah jalan — kita tidak bisa rollback file,
-                // jadi stop dan biarkan pemanggil tahu lewat sample count yang lebih kecil.
+                // Read PCM failed in the middle - can't rollback file
+                // so stop and let the caller know through a smaller sample count.
                 break;
             }
 
@@ -557,13 +570,13 @@ class SoundfontToGusPatch
     /**
      * Write drum patch
      * 
-     * @param array $zones Zones
+     * @param $zones Zones
      * @param mixed $program Program
      * @param mixed $presetName Preset name
      * @param mixed $drumDir Drum directory
      * @return void
      */
-    private function writeDrumPatches(array $zones, $program, $presetName, $drumDir)
+    private function writeDrumPatches($zones, $program, $presetName, $drumDir)
     {
         $usedNotes = [];
 
@@ -611,7 +624,7 @@ class SoundfontToGusPatch
      * @param int $fineTune Fine tuning (cents)
      * @param int $scaleTuning Scale tuning (cents per key)
      * @param int|null $overridingRootKey Overriding root key
-     * @return float|int
+     * @return float|int Effective root frequency
      */
     private function calculateEffectiveRootFreq(
         $sampleData,
@@ -629,7 +642,7 @@ class SoundfontToGusPatch
         if ($rootKey < 0)   $rootKey = 0;
         if ($rootKey > 127) $rootKey = 60;
 
-        // chPitchCorrection dalam cents (signed)
+        // chPitchCorrection in cents (signed)
         $pitchCorr = unpack('c', substr($sampleData, 41, 1))[1];
 
         // root_freq = natural frequency of sample when played at rootKey
@@ -659,7 +672,8 @@ class SoundfontToGusPatch
     }
 
     /**
-     * Write timidity config
+     * Write timidity config `timidity.cfg`
+     * 
      * @return void
      */
     private function writeTimidityConfig()
