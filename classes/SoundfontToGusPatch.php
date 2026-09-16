@@ -404,6 +404,8 @@ class SoundfontToGusPatch
         $validSamplesCount = 0;
 
         foreach ($sampleChunks as $s_chunk) {
+            if (strlen($s_chunk) < 46) continue;
+
             $s_name      = rtrim(substr($s_chunk, 0, 20), "\0");
             $s_start     = unpack('V', substr($s_chunk, 20, 4))[1];
             $s_end       = unpack('V', substr($s_chunk, 24, 4))[1];
@@ -414,78 +416,82 @@ class SoundfontToGusPatch
             $s_pitchCorr = unpack('c', substr($s_chunk, 41, 1))[1];
             $s_type      = unpack('v', substr($s_chunk, 44, 2))[1];
 
-            // Hanya proses sampel mono (tipe 1 atau 4)
-            if (($s_type & 0x7FFF) !== 1 && ($s_type & 0x7FFF) !== 4) continue;
+            // Only use mono samples. Stereo-linked SF2 samples need channel
+            // pairing and cannot be represented by one GUS waveform.
+            if (($s_type & 0x7FFF) !== 1) continue;
 
-            $pcmLenBytes = ($s_end - $s_start) * 2;
-            if ($pcmLenBytes <= 0 || $pcmLenBytes > 8 * 1024 * 1024) continue;
-
-            // --- PERBAIKAN 1: Perhitungan Root Frequency & Sample Rate ---
-            // Pastikan pitch valid (0-127)
-            $pitch = (int)$s_pitch;
-            if ($pitch < 0 || $pitch > 127) $pitch = 60; // Fallback ke C4
-
-            // Hitung frekuensi root dalam Hz, termasuk koreksi pitch
-            $midiNoteWithCents = $pitch + ($s_pitchCorr / 100.0);
-            $rootFreqHz = (int)round(440 * pow(2, ($midiNoteWithCents - 69) / 12));
-            if ($rootFreqHz < 8)     $rootFreqHz = 8;
-            if ($rootFreqHz > 12544) $rootFreqHz = 12544;
-
-            // Sample rate harus tetap rate asli (tidak dinormalisasi ke C4)
-            $sampleRate = (int)$s_rate;
-            if ($sampleRate < 8000)  $sampleRate = 8000;
-            if ($sampleRate > 48000) $sampleRate = 48000;
-
-            // --- PERBAIKAN 2: Validasi Loop Point yang Ketat ---
-            // Loop hanya valid jika berada di dalam batas data PCM
             $pcmSamples = $s_end - $s_start;
+            if ($pcmSamples <= 0 || $pcmSamples > 4 * 1024 * 1024) continue;
+            $pcmLenBytes = $pcmSamples * 2;
+
+            $pitch = (int)$s_pitch;
+            if ($pitch < 0 || $pitch > 127) $pitch = 60;
+
+            // GUS stores frequency fields as Hz * 256. SF2 pitchCorrection is cents.
+            $rootFreqHz = (int)round(
+                440 * pow(2, (($pitch - 69) / 12) + ($s_pitchCorr / 1200))
+            );
+            $rootFrequency = max(1, min(0xFFFFFFFF, $rootFreqHz * 256));
+            $lowFrequency = 8 * 256;
+            $highFrequency = 12544 * 256;
+
+            $sampleRate = (int)$s_rate;
+            if ($sampleRate < 1 || $sampleRate > 65535) $sampleRate = 44100;
+
             $loopStartS = ($s_loopStart > $s_start) ? ($s_loopStart - $s_start) : 0;
             $loopEndS   = ($s_loopEnd   > $s_start) ? ($s_loopEnd   - $s_start) : 0;
-            
-            // Pastikan loop end tidak melebihi panjang data
-            if ($loopEndS > $pcmSamples) $loopEndS = $pcmSamples;
 
-            // Loop minimal harus memiliki 8 sample untuk menghindari hang
-            $hasLoop = ($loopEndS - $loopStartS) >= 8;
+            // GUS loop offsets are byte offsets, while SF2 offsets are sample
+            // indexes. Reject malformed points instead of letting the player
+            // wrap outside the waveform buffer.
+            $hasLoop = $loopStartS >= 0
+                && $loopStartS < $pcmSamples - 1
+                && $loopEndS > $loopStartS
+                && $loopEndS <= $pcmSamples
+                && ($loopEndS - $loopStartS) >= 8;
 
             if ($hasLoop) {
                 $loopStartByte = $loopStartS * 2;
                 $loopEndByte   = $loopEndS * 2;
-                $modes = 0x01 | 0x04; // 16-bit + Looping
+                $modes = 0x01 | 0x04 | 0x20; // 16-bit + looping + sustain
             } else {
                 $loopStartByte = 0;
                 $loopEndByte   = 0;
-                $modes = 0x01; // 16-bit saja, tanpa loop
+                $modes = 0x01; // 16-bit signed, no loop
             }
 
-            // --- PERBAIKAN 3: Baca PCM dan Tulis Header 96-byte ---
-            fseek($this->fp, $this->smplOffset + ($s_start * 2));
+            if (fseek($this->fp, $this->smplOffset + ($s_start * 2), SEEK_SET) !== 0) continue;
             $rawPcm = fread($this->fp, $pcmLenBytes);
-            if (strlen($rawPcm) != $pcmLenBytes) continue;
+            if (strlen($rawPcm) !== $pcmLenBytes) continue;
 
-            // Konversi ke signed 16-bit little-endian
+            // SF2 PCM is signed 16-bit little-endian, the GUS format uses the
+            // same representation. Repack explicitly for host portability.
             $currentPcm = '';
-            for ($j = 0; $j < $pcmLenBytes / 2; $j++) {
-                $currentPcm .= pack('v', unpack('s', substr($rawPcm, $j * 2, 2))[1]);
+            for ($j = 0; $j < $pcmSamples; $j++) {
+                $sample = unpack('v', substr($rawPcm, $j * 2, 2))[1];
+                if ($sample >= 0x8000) $sample -= 0x10000;
+                $currentPcm .= pack('v', $sample);
             }
 
-            // Susun Wave Header (96 bytes) sesuai spesifikasi
-            $waveHeader  = str_pad(substr($s_name, 0, 7), 7, "\0"); // 0: name
-            $waveHeader .= pack('C', 0);                            // 7: fractions
-            $waveHeader .= pack('V', $pcmLenBytes);                 // 8: length
-            $waveHeader .= pack('V', $loopStartByte);               // 12: loop start
-            $waveHeader .= pack('V', $loopEndByte);                 // 16: loop end
-            $waveHeader .= pack('v', $sampleRate);                  // 20: sample rate
-            $waveHeader .= pack('V', 8);                            // 22: low freq (8 Hz)
-            $waveHeader .= pack('V', 12544);                        // 26: high freq (12544 Hz)
-            $waveHeader .= pack('V', $rootFreqHz);                  // 30: root freq
-            $waveHeader .= pack('v', 0);                            // 34: finetune
-            $waveHeader .= pack('C', 8);                            // 36: panning (center)
-            $waveHeader .= pack('CCCCCC', 63, 63, 63, 63, 63, 63);  // 37-42: env rates
-            $waveHeader .= pack('CCCCCC', 0,  0,  0,  0,  0,  0);   // 43-48: env offsets
-            $waveHeader .= str_repeat("\0", 6);                     // 49-54: tremolo/vibrato
-            $waveHeader .= pack('C', $modes);                       // 55: modes
-            $waveHeader .= str_repeat("\0", 40);                    // 56-95: reserved
+            // GUS waveform header: exactly 96 bytes.
+            $waveHeader  = str_pad(substr($s_name, 0, 7), 7, "\0");
+            $waveHeader .= pack('C', 0);
+            $waveHeader .= pack('V', $pcmLenBytes);
+            $waveHeader .= pack('V', $loopStartByte);
+            $waveHeader .= pack('V', $loopEndByte);
+            $waveHeader .= pack('v', $sampleRate);
+            $waveHeader .= pack('V', $lowFrequency);
+            $waveHeader .= pack('V', $highFrequency);
+            $waveHeader .= pack('V', $rootFrequency);
+            $waveHeader .= pack('v', 0);
+            $waveHeader .= pack('C', 8);
+            $waveHeader .= pack('CCCCCC', 63, 63, 63, 63, 63, 63);
+            $waveHeader .= pack('CCCCCC', 0, 0, 0, 0, 0, 0);
+            $waveHeader .= str_repeat("\0", 6);
+            $waveHeader .= pack('C', $modes);
+            $waveHeader .= str_repeat("\0", 40);
+
+            if (strlen($waveHeader) !== 96) continue;
 
             $patBody .= $waveHeader . $currentPcm;
             $validSamplesCount++;
@@ -493,7 +499,10 @@ class SoundfontToGusPatch
 
         if ($validSamplesCount === 0) return [null, 0];
 
-        // Susun Patch Header (239 bytes)
+        if ($validSamplesCount > 255) $validSamplesCount = 255;
+
+        // The local TiMidity patch reader uses the GUS 239-byte header and
+        // reads the waveform count from byte 198.
         $header  = "GF1PATCH110\0";                              // 0-11
         $header .= str_pad("ID#000002\0", 10, "\0");             // 12-21
         $header .= str_pad("PHP SF2->PAT", 60, "\0");            // 22-81
