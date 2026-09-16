@@ -583,7 +583,7 @@ class SoundfontToGusPatch
             $waveHeader .= pack('v', $sampleRate);
             $waveHeader .= pack('V', 8);                       // low freq (Hz)
             $waveHeader .= pack('V', 12544);                   // high freq (Hz)
-            $waveHeader .= pack('V', (int)round($rootFreqHz * 256)); // root freq (Hz)
+            $waveHeader .= pack('V', (int)round($rootFreqHz * 1024)); // root freq (Hz × 512 fixed-point)
             $waveHeader .= pack('v', 0);                       // finetune (unused)
             $waveHeader .= pack('C', 8);                       // panning centre
             $waveHeader .= pack('CCCCCC', 63, 63, 63, 63, 63, 63);
