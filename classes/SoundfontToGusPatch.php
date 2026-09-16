@@ -416,6 +416,7 @@ class SoundfontToGusPatch
     private function buildPatFile(array $sampleChunks)
     {
         $patBody = '';
+        $waveHeader = '';
         $validSamplesCount = 0;
 
         foreach ($sampleChunks as $s_chunk) {
@@ -448,23 +449,40 @@ class SoundfontToGusPatch
             $pcmLenBytes = $pcmSamples * 2;
 
             // ---- Root frequency with tuning offset ----
+            // ---- Hitung natural frequency dari shdr ----
             $pitch = (int)$s_pitch;
-            if ($pitch < 0 || $pitch > 127) $pitch = 60; // fallback C4
+            if ($pitch < 0 || $pitch > 127) $pitch = 60;
 
             $midiNoteWithCents = $pitch + ($s_pitchCorr / 100.0);
             $naturalFreqHz = 440 * pow(2, ($midiNoteWithCents - 69) / 12);
+            if ($naturalFreqHz < 1)    $naturalFreqHz = 1;
+            if ($naturalFreqHz > 12544) $naturalFreqHz = 12544;
 
             // Apply tuning offset: if the instrument wants a higher pitch,
             // we must lower the root frequency so the player speeds up the sample.
             // Δ semitones = tuneCents / 100;  ratio = 2^(-Δ/12) = 2^(-tuneCents/1200)
-            $rootFreqHz = $naturalFreqHz * pow(2, -$tuneCents / 1200);
-
-            if ($rootFreqHz < 1)    $rootFreqHz = 1;
-            if ($rootFreqHz > 12544) $rootFreqHz = 12544;
+            // root_frequency = pitch natural (Hz), tanpa modifikasi tuning.
+            // Tuning sudah dibakar ke sample_rate.
+            $rootFreqHz = (int)round($naturalFreqHz);
+            // ...
+            $waveHeader .= pack('V', $rootFreqHz);
 
             // ---- Sample rate: original, no normalisation ----
-            $sampleRate = (int)$s_rate;
-            if ($sampleRate < 1 || $sampleRate > 65535) $sampleRate = 44100;
+            // Normalkan ke C4: jika player mengasumsikan root=C4,
+            // sample_rate harus mencerminkan pitch C4 dari sample ini.
+            // Rasio = C4_freq / natural_freq.
+            // Contoh: root C5 (523 Hz), s_rate 44100 → sample_rate = 22050.
+            //         root C3 (131 Hz), s_rate 44100 → sample_rate = 88200.
+            $adjustedSampleRate = (int)round($s_rate * 261.625565 / $naturalFreqHz);
+
+            // Terapkan tuning ke sample_rate juga (bukan ke root_freq).
+            // coarseTune=+1 → sample diputar lebih cepat → pitch naik.
+            $tuneRatio = pow(2, $tuneCents / 1200);
+            $adjustedSampleRate = (int)round($adjustedSampleRate * $tuneRatio);
+
+            if ($adjustedSampleRate < 1)     $adjustedSampleRate = 1;
+            if ($adjustedSampleRate > 65535) $adjustedSampleRate = 65535;
+            $sampleRate = $adjustedSampleRate;
 
             // ---- Loop validation ----
             $loopStartS = ($s_loopStart > $s_start) ? ($s_loopStart - $s_start) : 0;
@@ -561,7 +579,7 @@ class SoundfontToGusPatch
             ksort($tones);
             foreach ($tones as $progNum => $paths) {
                 foreach ($paths as $path) {
-                    $cfg .= sprintf("%3d %s\n", $progNum, $path);
+                    $cfg .= sprintf("%-3d %s\n", $progNum, $path);
                 }
             }
         }
