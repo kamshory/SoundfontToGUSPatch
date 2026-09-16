@@ -391,10 +391,14 @@ try {
         </div>
     </div>
 
+    <script>
+        var patchUrlBase = './projects/<?php echo $project['directory_path']; ?>';
+    </script>
+    <script src="./assets/browser/timidity-player.js"></script>
+    <script src="./assets/browser/libtimidity.js"></script>
     <script type="module">
         import { MidiSynth } from './assets/js/audio.js';
         import { GusEditorApp } from './assets/js/gus-editor-app.js';
-        import { PlanetMidi } from './assets/js/app.js';
         import { DRUM_ICON_SET, DRUM_NOTE_MAP } from './assets/js/midi-icons.js';
 
         document.addEventListener('DOMContentLoaded', function() {
@@ -416,21 +420,99 @@ try {
                 sampleRate: 44100,
             });
 
-            // Initialize MIDI Player for the project
-            const midiPlayer = new PlanetMidi({
-                audioContext: sharedAudioContext, // Pass the shared context
-                uploadInputId: 'midi-upload',
-                fileNameDisplayId: 'file-name',
-                btnPlayId: 'btn-play',
-                btnPauseId: 'btn-pause',
-                btnStopId: 'btn-stop',
-                statusTextId: 'status-text',
-                infoPanelId: 'info-panel', // This element doesn't exist here, but that's okay
-                seekSliderId: 'seek-slider',
-                // sampleRate is now derived from the shared context
+            const midiFileInput = document.getElementById('midi-upload');
+            const midiFileName = document.getElementById('file-name');
+            const midiPlayButton = document.getElementById('btn-play');
+            const midiPauseButton = document.getElementById('btn-pause');
+            const midiStopButton = document.getElementById('btn-stop');
+            const midiStatus = document.getElementById('status-text');
+            const midiSeekSlider = document.getElementById('seek-slider');
+            const midiPlayer = new window.TimidityPlayer({
+                patchUrlBase,
                 bufferSize: 8192,
-                timidityCfg: 'timidity.cfg',
-                patchUrlBase: `./${projectDir}/`,
+                sampleRate: 44100,
+            });
+            const midiInitPromise = midiPlayer.init();
+
+            midiPlayer.on('onMidiLoading', () => {
+                midiStatus.textContent = 'Loading MIDI file...';
+            });
+            midiPlayer.on('onInstrumentLoading', (loaded, total, path) => {
+                midiStatus.textContent = total > 0
+                    ? `Loading instrument ${loaded}/${total}: ${path}`
+                    : 'Loading instruments...';
+            });
+            midiPlayer.on('onMidiLoaded', (midi, duration) => {
+                midiSeekSlider.max = duration;
+                midiSeekSlider.value = 0;
+                midiSeekSlider.disabled = false;
+                midiPlayButton.disabled = false;
+                midiPauseButton.disabled = true;
+                midiStopButton.disabled = false;
+                midiStatus.textContent = 'Ready to play.';
+            });
+            midiPlayer.on('onPlaying', (tick, seconds) => {
+                if (!midiPlayer.isSeeking) midiSeekSlider.value = seconds;
+                midiStatus.textContent = 'Playing...';
+            });
+            midiPlayer.on('onPause', () => {
+                midiStatus.textContent = 'Paused.';
+                midiPlayButton.disabled = false;
+                midiPauseButton.disabled = true;
+            });
+            midiPlayer.on('onResume', () => {
+                midiStatus.textContent = 'Playing...';
+                midiPlayButton.disabled = true;
+                midiPauseButton.disabled = false;
+            });
+            midiPlayer.on('onEnded', () => {
+                midiStatus.textContent = 'Finished playing.';
+                midiSeekSlider.value = midiSeekSlider.max;
+                midiPlayButton.disabled = false;
+                midiPauseButton.disabled = true;
+                midiStopButton.disabled = true;
+            });
+            midiPlayer.on('onStop', () => {
+                midiStatus.textContent = 'Stopped.';
+                midiSeekSlider.value = 0;
+                midiSeekSlider.disabled = true;
+                midiPlayButton.disabled = false;
+                midiPauseButton.disabled = true;
+                midiStopButton.disabled = true;
+            });
+            midiPlayer.on('onError', (message) => {
+                midiStatus.textContent = `Error: ${message}`;
+                midiPlayButton.disabled = true;
+            });
+
+            midiFileInput.addEventListener('change', async () => {
+                const file = midiFileInput.files[0];
+                if (!file) return;
+                midiFileName.textContent = file.name;
+                midiSeekSlider.disabled = true;
+                try {
+                    await midiInitPromise;
+                    const loaded = await midiPlayer.load(file);
+                    if (!loaded) midiStatus.textContent = 'Could not load MIDI file.';
+                } catch (error) {
+                    midiStatus.textContent = `Error: ${error.message}`;
+                }
+            });
+            midiPlayButton.addEventListener('click', async () => {
+                await midiInitPromise;
+                if (midiPlayer.isPaused) midiPlayer.resume();
+                else midiPlayer.play();
+                midiPlayButton.disabled = true;
+                midiPauseButton.disabled = false;
+            });
+            midiPauseButton.addEventListener('click', () => midiPlayer.pause());
+            midiStopButton.addEventListener('click', () => midiPlayer.stop());
+            midiSeekSlider.addEventListener('input', () => {
+                midiPlayer.isSeeking = true;
+                midiPlayer.seek(Number(midiSeekSlider.value));
+            });
+            midiSeekSlider.addEventListener('change', () => {
+                midiPlayer.isSeeking = false;
             });
 
             let editorApp; // Instance of GusEditorApp
