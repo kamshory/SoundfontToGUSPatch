@@ -410,6 +410,69 @@ class SoundfontToGusPatch
         }
     }
 
+    /**
+     * Hitung frekuensi root efektif untuk GUS wave header.
+     *
+     * Menggabungkan:
+     *  - byOriginalPitch + chPitchCorrection dari shdr
+     *  - coarseTune + fineTune (dari igen & pgen, sudah digabung pemanggil)
+     *  - scaleTuning (igen 56, default 100)
+     *  - overridingRootKey (igen 58, opsional)
+     *
+     * @param string $sampleData          46-byte shdr entry
+     * @param int    $coarseTune          semitones (igen + pgen)
+     * @param int    $fineTune            cents (igen + pgen)
+     * @param int    $scaleTuning         cents per key (default 100)
+     * @param int|null $overridingRootKey null jika tidak di-set
+     * @return float
+     */
+    private function calculateEffectiveRootFreq(
+        $sampleData,
+        $coarseTune = 0,
+        $fineTune = 0,
+        $scaleTuning = 100,
+        $overridingRootKey = null
+    ) {
+        // Root key: overridingRootKey (kalau ada) atau byOriginalPitch
+        if ($overridingRootKey !== null) {
+            $rootKey = (int)$overridingRootKey;
+        } else {
+            $rootKey = ord(substr($sampleData, 40, 1));
+        }
+        if ($rootKey < 0)   $rootKey = 0;
+        if ($rootKey > 127) $rootKey = 60;
+
+        // chPitchCorrection dalam cents (signed)
+        $pitchCorr = unpack('c', substr($sampleData, 41, 1))[1];
+
+        // Pitch efektif dalam MIDI note (dengan tuning dan pitch correction)
+        // scaleTuning mempengaruhi seberapa besar pengaruh root key terhadap pitch.
+        // Namun pada level "root_freq", yang ingin kita tahu adalah:
+        //   berapa Hz natural dari sample INI setelah semua tuning.
+        $midiNote = $rootKey + ($pitchCorr / 100.0)
+                + $coarseTune
+                + ($fineTune / 100.0);
+
+        // scaleTuning ≠ 100 → ubah rasio. Cara paling aman: 
+        // skala efek root key terhadap pitch.
+        // NOTE: ini kompromi; player .pat Anda tidak punya field scaleTuning,
+        // jadi kita "bakar" efeknya ke root_freq.
+        if ($scaleTuning !== 100) {
+            // Selisih dari C4 (60) dikali faktor scaleTuning
+            $offsetFromC4 = $midiNote - 60;
+            $midiNote = 60 + ($offsetFromC4 * $scaleTuning / 100.0);
+        }
+
+        // Konversi MIDI note ke Hz
+        $freqHz = 440 * pow(2, ($midiNote - 69) / 12);
+
+        // Clamp ke rentang aman
+        if ($freqHz < 8)     $freqHz = 8;
+        if ($freqHz > 12544) $freqHz = 12544;
+
+        return $freqHz;
+    }
+
     // ==================================================================
     // Build .pat dari list sample shdr
     // ==================================================================
@@ -448,41 +511,34 @@ class SoundfontToGusPatch
             if ($pcmSamples <= 0 || $pcmSamples > 4 * 1024 * 1024) continue;
             $pcmLenBytes = $pcmSamples * 2;
 
-            // ---- Root frequency with tuning offset ----
-            // ---- Hitung natural frequency dari shdr ----
-            $pitch = (int)$s_pitch;
-            if ($pitch < 0 || $pitch > 127) $pitch = 60;
+            // Kumpulkan tuning dari array (kalau ada)
+            $coarseTune        = is_array($s_chunk) && isset($s_chunk['coarseTune'])        ? $s_chunk['coarseTune']        : 0;
+            $fineTune          = is_array($s_chunk) && isset($s_chunk['fineTune'])          ? $s_chunk['fineTune']          : 0;
+            $scaleTuning       = is_array($s_chunk) && isset($s_chunk['scaleTuning'])       ? $s_chunk['scaleTuning']       : 100;
+            $overridingRootKey = is_array($s_chunk) && isset($s_chunk['overridingRootKey']) ? $s_chunk['overridingRootKey'] : null;
+            $presetTuneCents   = is_array($s_chunk) && isset($s_chunk['presetTuneCents'])   ? $s_chunk['presetTuneCents']   : 0;
 
-            $midiNoteWithCents = $pitch + ($s_pitchCorr / 100.0);
-            $naturalFreqHz = 440 * pow(2, ($midiNoteWithCents - 69) / 12);
-            if ($naturalFreqHz < 1)    $naturalFreqHz = 1;
-            if ($naturalFreqHz > 12544) $naturalFreqHz = 12544;
+            // Gabungkan preset + instrument tuning
+            $presetCoarse = intdiv($presetTuneCents, 100);
+            $presetFine   = $presetTuneCents % 100;
+            $totalCoarse  = $coarseTune + $presetCoarse;
+            $totalFine    = $fineTune + $presetFine;
 
-            // Apply tuning offset: if the instrument wants a higher pitch,
-            // we must lower the root frequency so the player speeds up the sample.
-            // Δ semitones = tuneCents / 100;  ratio = 2^(-Δ/12) = 2^(-tuneCents/1200)
-            // root_frequency = pitch natural (Hz), tanpa modifikasi tuning.
-            // Tuning sudah dibakar ke sample_rate.
-            $rootFreqHz = (int)round($naturalFreqHz);
-            // ...
-            $waveHeader .= pack('V', $rootFreqHz);
+            // Hitung frekuensi root efektif
+            $rootFreqHz = $this->calculateEffectiveRootFreq(
+                $sampleData,
+                $totalCoarse,
+                $totalFine,
+                $scaleTuning,
+                $overridingRootKey
+            );
 
-            // ---- Sample rate: original, no normalisation ----
-            // Normalkan ke C4: jika player mengasumsikan root=C4,
-            // sample_rate harus mencerminkan pitch C4 dari sample ini.
-            // Rasio = C4_freq / natural_freq.
-            // Contoh: root C5 (523 Hz), s_rate 44100 → sample_rate = 22050.
-            //         root C3 (131 Hz), s_rate 44100 → sample_rate = 88200.
-            $adjustedSampleRate = (int)round($s_rate * 261.625565 / $naturalFreqHz);
-
-            // Terapkan tuning ke sample_rate juga (bukan ke root_freq).
-            // coarseTune=+1 → sample diputar lebih cepat → pitch naik.
-            $tuneRatio = pow(2, $tuneCents / 1200);
-            $adjustedSampleRate = (int)round($adjustedSampleRate * $tuneRatio);
-
-            if ($adjustedSampleRate < 1)     $adjustedSampleRate = 1;
-            if ($adjustedSampleRate > 65535) $adjustedSampleRate = 65535;
-            $sampleRate = $adjustedSampleRate;
+            // Sample rate = rate asli. Player akan pakai root_freq untuk pitch.
+            $sampleRate = (int)$s_rate;
+            
+            //if ($sampleRate < 8000)  $sampleRate = 8000;
+            //if ($sampleRate > 48000) $sampleRate = 48000;
+            //error_log("Sample Rate ".$sampleRate);
 
             // ---- Loop validation ----
             $loopStartS = ($s_loopStart > $s_start) ? ($s_loopStart - $s_start) : 0;
